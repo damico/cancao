@@ -43,6 +43,18 @@ use verovioxide::{BreakMode, FooterMode, HeaderMode, Options, Toolkit};
 
 use crate::partitura::Partitura;
 
+/// Uma coluna de notas que começam juntas num sistema: o instante e onde ela
+/// está desenhada (px no sistema). `xn` é a borda esquerda das cabeças de
+/// nota (o ponto que corresponde ao instante); `x0` inclui o espaço dos
+/// acidentes à esquerda; `x1` é a borda direita das cabeças.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Ancora {
+    pub tempo: f64,
+    pub x0: f64,
+    pub xn: f64,
+    pub x1: f64,
+}
+
 /// Um sistema musical (uma linha da partitura com as duas pautas).
 pub struct Sistema {
     pub svg: String,
@@ -52,6 +64,29 @@ pub struct Sistema {
     /// semínimas da primeira e da última nota que começam nele
     pub inicio: f64,
     pub fim: f64,
+    /// colunas de notas ligadas à partitura, em ordem de tempo e de x
+    pub ancoras: Vec<Ancora>,
+}
+
+impl Sistema {
+    /// Posição x (px no sistema) do instante `t`, interpolada entre as
+    /// colunas de notas; None se o sistema não tem colunas.
+    pub fn x_em(&self, t: f64) -> Option<f64> {
+        let a = &self.ancoras;
+        let i = a.partition_point(|c| c.tempo <= t);
+        match (i, a.len()) {
+            (_, 0) => None,
+            (0, _) => Some(a[0].xn),
+            (i, n) if i == n => {
+                let ultima = a[n - 1];
+                Some((ultima.x1 + (t - ultima.tempo) * 20.0).min(self.largura - 2.0))
+            }
+            (i, _) => {
+                let (p, q) = (a[i - 1], a[i]);
+                Some(p.xn + (q.xn - p.xn) * (t - p.tempo) / (q.tempo - p.tempo))
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -89,7 +124,9 @@ impl Notacao {
 
 /// Diagrama a partitura do MusicXML para uma largura em px lógicos.
 /// `escala`: tamanho da notação em % (40 = padrão do painel).
-pub fn gravar(musicxml: &str, largura_px: u32, escala: u32, p: &Partitura) -> Result<Notacao, String> {
+/// `proporcional`: espaçamento mais próximo da duração das notas (menos
+/// deformação no modo alinhado ao tempo).
+pub fn gravar(musicxml: &str, largura_px: u32, escala: u32, proporcional: bool, p: &Partitura) -> Result<Notacao, String> {
     // os avisos do Verovio (comuns em arquivos exportados) iriam para o terminal
     Toolkit::enable_log(false);
     let mut tk = Toolkit::new().map_err(|e| e.to_string())?;
@@ -106,6 +143,8 @@ pub fn gravar(musicxml: &str, largura_px: u32, escala: u32, p: &Partitura) -> Re
         .header(HeaderMode::None)
         .footer(FooterMode::None)
         .svg_bounding_boxes(true)
+        .spacing_non_linear(if proporcional { 0.9 } else { 0.6 })
+        .spacing_linear(if proporcional { 0.1 } else { 0.25 })
         .build();
     tk.set_options(&opcoes).map_err(|e| e.to_string())?;
     tk.load_data(musicxml).map_err(|e| format!("Verovio não leu a partitura: {e}"))?;
@@ -135,7 +174,7 @@ pub fn gravar(musicxml: &str, largura_px: u32, escala: u32, p: &Partitura) -> Re
             let no_compasso = compasso_id.and_then(|c| inicio_compasso.get(&c).map(|q| tempo - q)).unwrap_or(0.0);
             notas.push(NotaGrafica { sistema: i, x, y, w, h, tempo, tecla: (midi - 21) as u8, compasso, no_compasso, indice: None });
         }
-        sistemas.push(Sistema { svg, largura, altura, inicio: 0.0, fim: 0.0 });
+        sistemas.push(Sistema { svg, largura, altura, inicio: 0.0, fim: 0.0, ancoras: Vec::new() });
     }
     let casadas = casar(&mut notas, p);
 
@@ -149,8 +188,34 @@ pub fn gravar(musicxml: &str, largura_px: u32, escala: u32, p: &Partitura) -> Re
         // sistema sem notas casadas: continua de onde o anterior parou
         (s.inicio, s.fim) = if ini.is_finite() { (ini.max(anterior), fim.max(anterior)) } else { (anterior, anterior) };
         anterior = s.inicio;
+        s.ancoras = ancoras(notas.iter().filter(|g| g.sistema == i && g.indice.is_some()));
     }
     Ok(Notacao { sistemas, notas, casadas })
+}
+
+/// Colunas de notas de um sistema: agrupa as notas que começam juntas e
+/// descarta as que voltariam no tempo ou no desenho (a posição x precisa
+/// crescer com o tempo para servir de régua).
+fn ancoras<'a>(notas: impl Iterator<Item = &'a NotaGrafica>) -> Vec<Ancora> {
+    let mut por_tempo: std::collections::BTreeMap<i64, Ancora> = std::collections::BTreeMap::new();
+    let mut cabeca = f64::INFINITY;
+    for g in notas {
+        cabeca = cabeca.min(g.w);
+        let c = por_tempo.entry((g.tempo * 1e3).round() as i64).or_insert(Ancora { tempo: g.tempo, x0: g.x, xn: g.x, x1: g.x + g.w });
+        c.xn = c.xn.min(g.x);
+        c.x1 = c.x1.max(g.x + g.w);
+    }
+    // acidentes ocupam mais ou menos uma cabeça de nota à esquerda
+    let folga = if cabeca.is_finite() { 1.2 * cabeca } else { 0.0 };
+    let mut saida: Vec<Ancora> = Vec::new();
+    for mut c in por_tempo.into_values() {
+        if saida.last().is_some_and(|u| c.xn <= u.xn + 0.5 || c.tempo <= u.tempo) {
+            continue;
+        }
+        c.x0 = (c.xn - folga).max(saida.last().map_or(0.0, |u| u.x1));
+        saida.push(c);
+    }
+    saida
 }
 
 /// Liga cada nota gráfica à nota da partitura com a mesma tecla que começa
@@ -346,7 +411,7 @@ mod testes {
     #[test]
     fn ode_gravada_e_casada_com_a_partitura() {
         let p = musicxml::de_texto(ODE).unwrap();
-        let n = gravar(ODE, 1150, 40, &p).unwrap();
+        let n = gravar(ODE, 1150, 40, false, &p).unwrap();
         assert!(!n.sistemas.is_empty());
         // 61 notas escritas: a continuação da ligadura também aparece
         assert_eq!(n.notas.len(), 61);
@@ -367,7 +432,7 @@ mod testes {
     fn sistemas_em_ordem_e_achados_pela_posicao() {
         let p = musicxml::de_texto(ODE).unwrap();
         // estreito: força vários sistemas
-        let n = gravar(ODE, 500, 40, &p).unwrap();
+        let n = gravar(ODE, 500, 40, false, &p).unwrap();
         assert!(n.sistemas.len() > 2, "{} sistemas", n.sistemas.len());
         assert!(n.sistemas.windows(2).all(|w| w[0].inicio <= w[1].inicio));
         for g in n.notas.iter().filter(|g| g.indice.is_some()) {
@@ -377,9 +442,27 @@ mod testes {
     }
 
     #[test]
+    fn ancoras_crescem_com_o_tempo() {
+        let p = musicxml::de_texto(ODE).unwrap();
+        for proporcional in [false, true] {
+            let n = gravar(ODE, 700, 40, proporcional, &p).unwrap();
+            for s in &n.sistemas {
+                assert!(!s.ancoras.is_empty());
+                for par in s.ancoras.windows(2) {
+                    assert!(par[0].tempo < par[1].tempo && par[0].xn < par[1].xn && par[0].x1 <= par[1].x0 + 1e-9, "{par:?}");
+                }
+                // o cursor anda para a frente dentro do sistema
+                let (a, b) = (s.ancoras[0].tempo, s.ancoras.last().unwrap().tempo);
+                assert!(s.x_em(a).unwrap() < s.x_em((a + b) / 2.0).unwrap());
+                assert!(s.x_em((a + b) / 2.0).unwrap() < s.x_em(b).unwrap());
+            }
+        }
+    }
+
+    #[test]
     fn mais_aguda_fica_mais_alta_no_desenho() {
         let p = musicxml::de_texto(ODE).unwrap();
-        let n = gravar(ODE, 1150, 40, &p).unwrap();
+        let n = gravar(ODE, 1150, 40, false, &p).unwrap();
         // no 1º tempo: E4 (pauta de cima) acima do acorde C3-E3-G3
         let no_inicio: Vec<&NotaGrafica> = n.notas.iter().filter(|g| g.tempo == 0.0).collect();
         let y = |nome| no_inicio.iter().find(|g| g.tecla == crate::corda::tecla_de_nome(nome).unwrap() as u8).unwrap().y;
@@ -390,7 +473,7 @@ mod testes {
     fn rasteriza_com_a_fonte_musical() {
         assert!(leipzig_ttf().is_some_and(|t| t.len() > 10_000), "Leipzig decodificada");
         let p = musicxml::de_texto(ODE).unwrap();
-        let n = gravar(ODE, 1150, 40, &p).unwrap();
+        let n = gravar(ODE, 1150, 40, false, &p).unwrap();
         let (w, h, rgba) = rasterizar(&n.sistemas[0], 1.0, [0, 0, 0], [255, 255, 255]).unwrap();
         assert_eq!((w as f64, h as f64), (n.sistemas[0].largura.ceil(), n.sistemas[0].altura.ceil()));
         // tem tinta: parte dos pixels escuros

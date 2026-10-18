@@ -46,7 +46,7 @@ use crate::eventos::{Evento, EventoAgendado};
 use crate::motor::{Estado as EstadoMotor, Motor};
 use crate::musicxml;
 use crate::partitura::Partitura;
-use crate::player::{Execucao, INICIO_S, Player};
+use crate::player::{Execucao, Player};
 use linha_do_tempo::{Estado, NotaDesenho, Peso, Vista};
 use painel::Painel;
 use transporte::Transporte;
@@ -96,8 +96,8 @@ struct App {
     selecionada: Option<usize>,
     cor_por_mao: bool,
     modelo_guia: bool,
-    /// humanização do player para as peças abertas pela interface
-    humanizacao: f32,
+    /// o player (humanização, pé) para as peças abertas pela interface
+    player: Player,
     /// o que foi entregue ao Slint da última vez (para não refazer à toa)
     desenhado: Option<(Vista, Vec<NotaDesenho>, Option<usize>, bool)>,
     /// vigia do áudio: último pulso do motor e quando mudou
@@ -117,7 +117,8 @@ impl App {
     /// Posição atual em semínimas (None antes de começar).
     fn agora_tempo(&self) -> Option<f64> {
         let s = self.transporte.agora_s(self.quadro());
-        (self.transporte.tocando() || s > 0.0).then(|| self.peca.partitura.tempo_em((s - INICIO_S).max(0.0)))
+        // pelo relógio da execução: inclui o ritardando do fim
+        (self.transporte.tocando() || s > 0.0).then(|| self.peca.execucao.relogio.tempo_em(s))
     }
 
     /// Abre (ou troca) o dispositivo de áudio com um motor novo, mantendo
@@ -227,7 +228,7 @@ impl App {
         ui.set_zoom(format!("{:.0}%", self.vista.zoom_percentual()).into());
         ui.set_tocando(self.transporte.tocando());
         ui.set_mensagem(self.mensagem.clone().into());
-        self.painel.atualizar(ui, agora, self.transporte.tocando(), self.selecionada);
+        self.painel.atualizar(ui, &self.vista, agora, self.transporte.tocando(), self.selecionada);
     }
 
     /// Entrega ao Slint o que está visível.
@@ -286,7 +287,8 @@ impl App {
             })
             .collect();
         let rotulos: Vec<RotuloVis> = g.rotulos.into_iter().map(|(x, t)| RotuloVis { x: x as f32, texto: t.into() }).collect();
-        let pedais: Vec<FaixaVis> = linha_do_tempo::pedais_visiveis(&self.vista, p)
+        // como o pé pedalou (marcações da partitura ou pedal automático)
+        let pedais: Vec<FaixaVis> = linha_do_tempo::pedais_visiveis(&self.vista, &self.peca.execucao.pedais)
             .into_iter()
             .map(|(x, w)| FaixaVis { x: x as f32, w: w as f32 })
             .collect();
@@ -319,7 +321,7 @@ impl App {
     /// Troca a peça: o player toca a nova partitura e a vista volta ao começo.
     fn trocar_peca(&mut self, ui: &PianoRoll, partitura: Partitura, fonte: Option<String>) {
         self.com_transporte(|t, q, envia| t.parar(q, envia));
-        let execucao = Player { humanizacao: self.humanizacao, ..Player::default() }.tocar(&partitura, self.taxa);
+        let execucao = self.player.tocar(&partitura, self.taxa);
         self.painel = Painel::new(fonte.clone(), partitura.clone());
         self.peca = Peca { partitura, execucao, fonte };
         self.transporte = Transporte::new(self.peca.execucao.roteiro.eventos.clone(), self.peca.execucao.roteiro.duracao, self.taxa);
@@ -356,7 +358,7 @@ fn resumo(peca: &Peca) -> String {
 fn escolher_musicxml() -> Option<std::path::PathBuf> {
     let mut dialogo = rfd::FileDialog::new()
         .set_title("Abrir partitura MusicXML")
-        .add_filter("MusicXML", &["musicxml", "xml"]);
+        .add_filter("MusicXML", &["musicxml", "xml", "mxl"]);
     if let Ok(pasta) = std::env::current_dir() {
         let exemplos = pasta.join("exemplos");
         dialogo = dialogo.set_directory(if exemplos.is_dir() { exemplos } else { pasta });
@@ -365,7 +367,7 @@ fn escolher_musicxml() -> Option<std::path::PathBuf> {
 }
 
 /// Monta a interface, ainda sem áudio (ver [`App::conectar`]).
-fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, humanizacao: f32) -> Rc<RefCell<App>> {
+fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, player: Player) -> Rc<RefCell<App>> {
     let transporte = Transporte::new(peca.execucao.roteiro.eventos.clone(), peca.execucao.roteiro.duracao, taxa);
     let vista = enquadrar(ui, &peca.partitura);
     let mensagem = resumo(&peca);
@@ -388,7 +390,7 @@ fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, humanizacao:
         selecionada: None,
         cor_por_mao: false,
         modelo_guia,
-        humanizacao,
+        player,
         desenhado: None,
         pulso: (u64::MAX, Instant::now()),
         mensagem,
@@ -422,7 +424,7 @@ fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, humanizacao:
             match musicxml::ler(&arquivo) {
                 Ok(p) if p.notas.is_empty() => a.mensagem = format!("{}: nenhuma nota encontrada.", arquivo.display()),
                 Ok(p) => {
-                    a.trocar_peca(&ui, p, std::fs::read_to_string(&arquivo).ok());
+                    a.trocar_peca(&ui, p, musicxml::ler_texto(&arquivo).ok());
                     a.tocar();
                 }
                 Err(e) => a.mensagem = format!("Não foi possível abrir: {e}"),
@@ -452,7 +454,7 @@ fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, humanizacao:
     ligar!(on_clicar_partitura, |a, id| {
         if let Some((indice, tempo)) = a.painel.nota_da_marca(id as usize) {
             a.selecionar(indice);
-            let s = a.peca.partitura.segundos(tempo) + INICIO_S;
+            let s = a.peca.execucao.relogio.segundos(tempo);
             a.com_transporte(|t, q, envia| t.saltar(s, q, envia));
             a.vista.seguir(tempo);
         }
@@ -485,7 +487,7 @@ fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, humanizacao:
     ligar!(on_clicar_fundo, |a| a.selecionar(None));
     ligar!(on_clicar_regua, |a, x| {
         let tempo = a.vista.tempo_de_x(x as f64).max(0.0);
-        let s = a.peca.partitura.segundos(tempo) + INICIO_S;
+        let s = a.peca.execucao.relogio.segundos(tempo);
         a.com_transporte(|t, q, envia| t.saltar(s, q, envia));
     });
     ligar!(on_rolar, |a, dx, dy, ctrl, shift, x, y| {
@@ -506,9 +508,9 @@ fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, humanizacao:
 /// Abre a janela e toca pelo dispositivo de áudio (sem áudio, só mostra).
 /// `modelo_guia`: o modelo de corda com que a fábrica cria os motores.
 #[allow(clippy::too_many_arguments)]
-pub fn rodar(peca: Peca, fabrica: FabricaMotor, modelo_guia: bool, taxa: u32, dispositivo: &str, latencia_us: u32, humanizacao: f32) -> Result<(), String> {
+pub fn rodar(peca: Peca, fabrica: FabricaMotor, modelo_guia: bool, taxa: u32, dispositivo: &str, latencia_us: u32, player: Player) -> Result<(), String> {
     let ui = PianoRoll::new().map_err(|e| e.to_string())?;
-    let app = montar(&ui, peca, taxa, modelo_guia, humanizacao);
+    let app = montar(&ui, peca, taxa, modelo_guia, player);
     {
         let mut a = app.borrow_mut();
         a.fabrica = Some(fabrica);
@@ -572,20 +574,22 @@ impl slint::platform::Platform for PlataformaSemTela {
 /// Desenha a interface sem abrir janela e salva em PNG, com o playhead em
 /// `tempo` (semínimas) e a nota que soa ali selecionada.
 /// `modo_partitura`: 0 oculta, 1 compacta, 2 expandida, 3 tela cheia.
-pub fn capturar(peca: Peca, caminho: &Path, tempo: Option<f64>, modo_partitura: i32, largura: u32, altura: u32) -> Result<(), String> {
+#[allow(clippy::too_many_arguments)]
+pub fn capturar(peca: Peca, player: Player, caminho: &Path, tempo: Option<f64>, modo_partitura: i32, alinhado: bool, largura: u32, altura: u32) -> Result<(), String> {
     let janela = MinimalSoftwareWindow::new(RepaintBufferType::NewBuffer);
     slint::platform::set_platform(Box::new(PlataformaSemTela(janela.clone()))).map_err(|e| e.to_string())?;
     janela.set_size(slint::PhysicalSize::new(largura, altura));
     let ui = PianoRoll::new().map_err(|e| e.to_string())?;
     ui.show().map_err(|e| e.to_string())?;
     ui.set_modo_partitura(modo_partitura);
+    ui.set_alinhado(alinhado);
 
-    let app = montar(&ui, peca, 48000, false, 0.5);
+    let app = montar(&ui, peca, 48000, false, player);
     ui.set_dispositivos(ModelRc::new(VecModel::from(vec![SharedString::from("default")])));
     {
         let mut a = app.borrow_mut();
         if let Some(t) = tempo {
-            let s = a.peca.partitura.segundos(t) + INICIO_S;
+            let s = a.peca.execucao.relogio.segundos(t);
             a.com_transporte(|tr, q, envia| tr.saltar(s, q, envia));
             // a posição efetiva (o transporte limita ao fim da peça)
             let t = a.agora_tempo().unwrap_or(0.0);
@@ -598,7 +602,7 @@ pub fn capturar(peca: Peca, caminho: &Path, tempo: Option<f64>, modo_partitura: 
         a.atualizar(&ui);
         // a partitura é diagramada aqui mesmo, sem thread
         let largura = ui.get_partitura_largura() as u32;
-        a.painel.diagramar_agora(largura);
+        a.painel.diagramar_agora(largura, ui.get_alinhado());
         a.atualizar(&ui);
     }
 

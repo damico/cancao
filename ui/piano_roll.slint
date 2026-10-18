@@ -74,6 +74,18 @@ export struct SistemaVis {
     h: length,
 }
 
+// um pedaço de sistema na tira alinhada ao tempo: o trecho
+// [clip-x, clip-x + clip-w) da imagem (px físicos) posto em [x, x + w)
+export struct FatiaVis {
+    imagem: image,
+    clip-x: int,
+    clip-w: int,
+    clip-h: int,
+    x: length,
+    w: length,
+    h: length,
+}
+
 // uma nota desenhada na partitura (para destaque e clique)
 export struct MarcaVis {
     id: int,
@@ -153,6 +165,13 @@ export component PianoRoll inherits Window {
     in property <length> altura-compacta: 150px;
     in-out property <length> altura-expandida: 340px;
     in-out property <bool> seguir: true;
+    // partitura alinhada ao tempo do piano roll
+    in-out property <bool> alinhado: false;
+    in property <[FatiaVis]> fatias;
+    in property <length> cursor-x;
+    in property <length> cursor-y;
+    in property <length> cursor-h;
+    in property <bool> cursor-visivel;
     in property <string> status-partitura;
     in property <string> zoom-partitura;
     in property <[SistemaVis]> sistemas;
@@ -299,6 +318,11 @@ export component PianoRoll inherits Window {
                 }
                 Info { text: root.posicao; }
                 Botao {
+                    texto: "Alinhar ao tempo";
+                    ativo: root.alinhado;
+                    clicado => { root.alinhado = !root.alinhado; root.mudou-partitura(); }
+                }
+                Botao {
                     texto: "Seguir execução";
                     ativo: root.seguir;
                     clicado => { root.seguir = !root.seguir; root.mudou-partitura(); }
@@ -328,11 +352,29 @@ export component PianoRoll inherits Window {
             vertical-stretch: root.modo-partitura == 3 ? 1 : 0;
             background: #e9e5da;
             clip: true;
+            // alinhado: a área da partitura coincide com a do roll (depois da
+            // coluna do teclado, antes do inspetor)
+            area := Rectangle {
+            x: root.alinhado ? 64px : 0px;
+            width: root.alinhado ? root.roll-largura : parent.width;
+            clip: true;
             TouchArea {
                 scroll-event(e) => {
                     root.rolar-partitura(e.delta-y / 1px);
                     return accept;
                 }
+            }
+            for f in root.fatias: Image {
+                x: f.x;
+                y: 0px;
+                width: f.w;
+                height: f.h;
+                source: f.imagem;
+                source-clip-x: f.clip-x;
+                source-clip-y: 0;
+                source-clip-width: f.clip-w;
+                source-clip-height: f.clip-h;
+                image-fit: fill;
             }
             for s in root.sistemas: Image {
                 x: s.x;
@@ -359,6 +401,15 @@ export component PianoRoll inherits Window {
                         return accept;
                     }
                 }
+            }
+            // cursor de execução
+            if root.cursor-visivel: Rectangle {
+                x: root.cursor-x - 1px;
+                y: root.cursor-y;
+                width: 2px;
+                height: root.cursor-h;
+                background: #e0a020;
+            }
             }
         }
         // divisória arrastável (modo expandido)

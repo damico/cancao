@@ -31,6 +31,7 @@ use crate::corda::{self, Corda, NUM_TECLAS};
 use crate::eventos::Pedal;
 use crate::guia::{self, Dispersao, VozGuia};
 use crate::modal::VozModal;
+use crate::ressonancia::Ressonancia;
 use crate::tampo::{self, Tampo};
 
 pub const MAX_VOZES: usize = 32;
@@ -124,6 +125,8 @@ pub struct Synth {
     pub volume: f32,
     tampo: Option<Tampo>,
     pub tampo_ligado: bool,
+    /// cordas livres excitadas pelo cavalete (None = desligada)
+    ressonancia: Option<Ressonancia>,
     pressionadas: [bool; NUM_TECLAS],
     /// abafadores presos pelo sostenuto
     sostenuto_preso: [bool; NUM_TECLAS],
@@ -138,6 +141,7 @@ pub struct Synth {
 impl Synth {
     pub fn new(taxa: f32, fator_tensao: f64, tampo: Option<Tampo>) -> Self {
         let cordas = corda::cordas(fator_tensao);
+        let ressonancia = Some(Ressonancia::new(&cordas, taxa));
         Synth {
             taxa,
             dispersao: cordas.iter().map(|c| guia::projetar_dispersao(c, taxa)).collect(),
@@ -149,6 +153,7 @@ impl Synth {
             volume: VOLUME_PADRAO,
             tampo_ligado: tampo.is_some(),
             tampo,
+            ressonancia,
             pressionadas: [false; NUM_TECLAS],
             sostenuto_preso: [false; NUM_TECLAS],
             sustain: 0.0,
@@ -162,6 +167,17 @@ impl Synth {
     pub fn com_modelo(mut self, modelo: Modelo) -> Self {
         self.modelo = modelo;
         self
+    }
+
+    /// Sem a ressonância simpática das cordas livres.
+    pub fn sem_ressonancia(mut self) -> Self {
+        self.ressonancia = None;
+        self
+    }
+
+    /// Cordas livres sendo processadas agora.
+    pub fn cordas_ressoando(&self) -> usize {
+        self.ressonancia.as_ref().map_or(0, |r| r.ativas())
     }
 
     pub fn cordas(&self) -> &[Corda] {
@@ -323,6 +339,25 @@ impl Synth {
                 saida[2 * t] += mono[t] * v.ganho_e;
                 saida[2 * t + 1] += mono[t] * v.ganho_d;
                 cavalete[t] += mono[t];
+            }
+        }
+
+        // cordas livres: excitadas pelo cavalete, devolvem o som a ele (ao
+        // centro, porque vêm de todo o piano)
+        if self.ressonancia.is_some() {
+            let contatos: [f32; NUM_TECLAS] = std::array::from_fn(|k| self.contato(k));
+            let mut tocando = [false; NUM_TECLAS];
+            for v in self.vozes.iter().filter(|v| v.ativa) {
+                tocando[v.tecla] = true;
+            }
+            let mut livres = [0f32; BLOCO];
+            if let Some(r) = self.ressonancia.as_mut() {
+                r.processar(&cavalete, &contatos, &tocando, &mut livres);
+            }
+            for t in 0..BLOCO {
+                saida[2 * t] += 0.7 * livres[t];
+                saida[2 * t + 1] += 0.7 * livres[t];
+                cavalete[t] += livres[t];
             }
         }
 

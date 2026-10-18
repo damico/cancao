@@ -24,12 +24,15 @@
 //!   `staff`, a 1ª parte vai para cima e as outras para baixo;
 //! - `voice` (vozes do contraponto) e fórmula de compasso (`time`);
 //! - ligaduras de prolongamento (`tie` start/stop): as notas viram uma só;
-//! - andamento (`sound tempo`), dinâmicas (`pppp` a `ffff`) e pedal de
-//!   sustain (`pedal` start/stop/change).
+//! - andamento (`sound tempo`), dinâmicas (`pppp` a `ffff`), crescendo e
+//!   diminuendo (`wedge`, interpolando até a dinâmica seguinte) e pedal de
+//!   sustain (`pedal` start/stop/change);
+//! - articulações (staccato, staccatissimo, acento, tenuto, fermata) e
+//!   dedilhado escrito (`fingering`);
+//! - o formato comprimido `.mxl` (um ZIP com o MusicXML dentro).
 //!
-//! Ignora (sem erro): `grace`, ornamentos, articulações, repetições,
-//! `offset` de direções, letras e tudo de diagramação. Não lê `score-timewise`
-//! nem o formato comprimido `.mxl`.
+//! Ignora (sem erro): `grace`, ornamentos, repetições, `offset` de
+//! direções, letras e tudo de diagramação. Não lê `score-timewise`.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -39,8 +42,33 @@ use roxmltree::{Document, Node, ParsingOptions};
 use crate::corda::NUM_TECLAS;
 use crate::partitura::{Nota, Partitura, Pauta};
 
+/// O texto MusicXML de um arquivo `.musicxml`/`.xml`, ou de dentro de um
+/// `.mxl` (ZIP: o arquivo principal vem indicado em META-INF/container.xml).
+pub fn ler_texto(caminho: &Path) -> Result<String, String> {
+    let erro = |e: &dyn std::fmt::Display| format!("{}: {e}", caminho.display());
+    let bytes = std::fs::read(caminho).map_err(|e| erro(&e))?;
+    if !bytes.starts_with(b"PK") {
+        return String::from_utf8(bytes).map_err(|e| erro(&e));
+    }
+    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| erro(&e))?;
+    let mut ler_entrada = |nome: &str| -> Result<String, String> {
+        let mut s = String::new();
+        std::io::Read::read_to_string(&mut zip.by_name(nome).map_err(|e| erro(&e))?, &mut s).map_err(|e| erro(&e))?;
+        Ok(s)
+    };
+    let container = ler_entrada("META-INF/container.xml")?;
+    let doc = Document::parse(&container).map_err(|e| erro(&e))?;
+    let principal = doc
+        .descendants()
+        .find(|n| n.has_tag_name("rootfile"))
+        .and_then(|n| n.attribute("full-path"))
+        .ok_or_else(|| erro(&"MXL sem rootfile em META-INF/container.xml"))?
+        .to_string();
+    ler_entrada(&principal)
+}
+
 pub fn ler(caminho: &Path) -> Result<Partitura, String> {
-    let texto = std::fs::read_to_string(caminho).map_err(|e| format!("{}: {e}", caminho.display()))?;
+    let texto = ler_texto(caminho)?;
     let mut p = de_texto(&texto).map_err(|e| format!("{}: {e}", caminho.display()))?;
     if p.titulo.is_empty() {
         p.titulo = caminho.file_stem().map_or("(sem título)".into(), |n| n.to_string_lossy().into_owned());
@@ -78,6 +106,50 @@ fn dinamica(nome: &str) -> Option<f32> {
     })
 }
 
+/// Articulações e dedo escrito de um elemento `note`.
+fn articulacoes(nota: Node) -> (crate::partitura::Articulacao, Option<u8>) {
+    let mut a = crate::partitura::Articulacao::default();
+    let mut dedo = None;
+    for n in nota.children().filter(|c| c.has_tag_name("notations")) {
+        if let Some(arts) = filho(n, "articulations") {
+            for c in arts.children().filter(|c| c.is_element()) {
+                match c.tag_name().name() {
+                    "staccato" => a.staccato = true,
+                    "staccatissimo" | "spiccato" => a.staccatissimo = true,
+                    "accent" | "strong-accent" => a.acento = true,
+                    "tenuto" | "detached-legato" => a.tenuto = true,
+                    _ => {}
+                }
+            }
+        }
+        a.fermata |= filho(n, "fermata").is_some();
+        if let Some(t) = filho(n, "technical") {
+            dedo = dedo.or(texto_de(t, "fingering").and_then(|f| f.parse::<u8>().ok()).filter(|d| (1..=5).contains(d)));
+        }
+    }
+    (a, dedo)
+}
+
+/// Crescendo/diminuendo: a força vai da dinâmica do começo da cunha até a
+/// dinâmica marcada logo depois do fim dela (ou um degrau, se não houver).
+fn aplicar_cunhas(notas: &mut [Nota], marcas: &[(f64, f32)], cunhas: &[(f64, f64, f32)]) {
+    let em = |t: f64| marcas.iter().rev().find(|m| m.0 <= t + 1e-9).map_or(0.55, |m| m.1);
+    for &(a, b, sentido) in cunhas {
+        if b <= a {
+            continue;
+        }
+        let v0 = em(a);
+        // a dinâmica de chegada vem marcada até ~1 compasso depois do fim
+        let chegada = marcas.iter().find(|m| m.0 >= b - 1e-9 && m.0 <= b + 4.0);
+        let v1 = chegada.map_or((v0 + 0.15 * sentido).clamp(0.05, 1.0), |m| m.1);
+        let ate = chegada.map_or(b, |m| m.0);
+        for n in notas.iter_mut().filter(|n| n.inicio >= a - 1e-9 && n.inicio < ate) {
+            let u = ((n.inicio - a) / (b - a)).min(1.0) as f32;
+            n.dinamica = v0 + (v1 - v0) * u;
+        }
+    }
+}
+
 pub fn de_texto(xml: &str) -> Result<Partitura, String> {
     // o cabeçalho padrão traz um DOCTYPE; a DTD não é baixada nem usada
     let opcoes = ParsingOptions { allow_dtd: true, ..ParsingOptions::default() };
@@ -108,6 +180,11 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
         let mut inicio_ultima = 0.0;
         let mut forca = 0.55; // mf até aparecer outra dinâmica
         let mut pedal_desde: Option<f64> = None;
+        // para os crescendos: as dinâmicas marcadas e os trechos com cunha
+        let primeira_nota = p.notas.len();
+        let mut marcas: Vec<(f64, f32)> = Vec::new();
+        let mut cunhas: Vec<(f64, f64, f32)> = Vec::new();
+        let mut cunha_desde: Option<(f64, f32)> = None;
         // ligadura aberta: (tecla, pauta) -> índice da nota
         let mut ligadas: HashMap<(u8, Pauta), usize> = HashMap::new();
 
@@ -150,6 +227,19 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
                             if let Some(d) = filho(tipo, "dynamics") {
                                 if let Some(v) = d.children().filter(|c| c.is_element()).find_map(|c| dinamica(c.tag_name().name())) {
                                     forca = v;
+                                    marcas.push((cursor, v));
+                                }
+                            }
+                            if let Some(w) = filho(tipo, "wedge") {
+                                match w.attribute("type") {
+                                    Some("crescendo") => cunha_desde = Some((cursor, 1.0)),
+                                    Some("diminuendo") => cunha_desde = Some((cursor, -1.0)),
+                                    Some("stop") => {
+                                        if let Some((ini, sentido)) = cunha_desde.take() {
+                                            cunhas.push((ini, cursor, sentido));
+                                        }
+                                    }
+                                    _ => {}
                                 }
                             }
                             if let Some(ped) = filho(tipo, "pedal") {
@@ -220,7 +310,8 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
                             }
                         }
                         let voz = texto_de(el, "voice").and_then(|v| v.parse().ok()).unwrap_or(if pauta == Pauta::Superior { 1 } else { 5 });
-                        p.notas.push(Nota { inicio, duracao: dur, tecla, pauta, dinamica: forca, voz });
+                        let (articulacao, dedo) = articulacoes(el);
+                        p.notas.push(Nota { inicio, duracao: dur, tecla, pauta, dinamica: forca, voz, articulacao, dedo });
                         if ties.contains(&"start") {
                             ligadas.insert((tecla, pauta), p.notas.len() - 1);
                         }
@@ -233,6 +324,7 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
         if let Some(d) = pedal_desde {
             p.pedais.push((d, cursor)); // pedal não solto até o fim
         }
+        aplicar_cunhas(&mut p.notas[primeira_nota..], &marcas, &cunhas);
     }
     p.notas.sort_by(|a, b| a.inicio.total_cmp(&b.inicio).then(a.tecla.cmp(&b.tecla)));
     p.andamentos.sort_by(|a, b| a.0.total_cmp(&b.0));
@@ -288,6 +380,50 @@ mod testes {
         assert_eq!(forca_em(0.0), 0.55); // mf
         assert_eq!(forca_em(16.0), 0.35); // p no compasso 5
         assert_eq!(forca_em(24.0), 0.70); // f no compasso 7
+    }
+
+    #[test]
+    fn articulacoes_dedos_e_crescendo() {
+        let xml = r#"<score-partwise version="4.0"><part id="P1"><measure number="1">
+            <attributes><divisions>1</divisions></attributes>
+            <direction><direction-type><dynamics><p/></dynamics></direction-type></direction>
+            <direction><direction-type><wedge type="crescendo"/></direction-type></direction>
+            <note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration>
+              <notations><articulations><staccato/></articulations><technical><fingering>1</fingering></technical></notations></note>
+            <note><pitch><step>D</step><octave>4</octave></pitch><duration>1</duration>
+              <notations><articulations><accent/></articulations></notations></note>
+            <note><pitch><step>E</step><octave>4</octave></pitch><duration>1</duration>
+              <notations><fermata/><technical><fingering>3</fingering></technical></notations></note>
+            <direction><direction-type><wedge type="stop"/></direction-type></direction>
+            <direction><direction-type><dynamics><f/></dynamics></direction-type></direction>
+            <note><pitch><step>F</step><octave>4</octave></pitch><duration>1</duration></note>
+        </measure></part></score-partwise>"#;
+        let p = de_texto(xml).unwrap();
+        let n = &p.notas;
+        assert!(n[0].articulacao.staccato && n[1].articulacao.acento && n[2].articulacao.fermata);
+        assert_eq!((n[0].dedo, n[1].dedo, n[2].dedo), (Some(1), None, Some(3)));
+        // crescendo de p (0,35) até f (0,70): sobe nota a nota
+        assert_eq!(n[0].dinamica, 0.35);
+        assert!(n[0].dinamica < n[1].dinamica && n[1].dinamica < n[2].dinamica && n[2].dinamica < n[3].dinamica);
+        assert_eq!(n[3].dinamica, 0.70);
+    }
+
+    #[test]
+    fn le_mxl_comprimido() {
+        use std::io::Write;
+        let dir = std::env::temp_dir().join(format!("cancao-mxl-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let caminho = dir.join("ode.mxl");
+        let mut z = zip::ZipWriter::new(std::fs::File::create(&caminho).unwrap());
+        let op = zip::write::SimpleFileOptions::default();
+        z.start_file("META-INF/container.xml", op).unwrap();
+        z.write_all(br#"<container><rootfiles><rootfile full-path="partitura/ode.xml"/></rootfiles></container>"#).unwrap();
+        z.start_file("partitura/ode.xml", op).unwrap();
+        z.write_all(ODE.as_bytes()).unwrap();
+        z.finish().unwrap();
+        let p = ler(&caminho).unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(p.notas.len(), 60);
     }
 
     #[test]

@@ -30,9 +30,16 @@
 //! 4. tempo e força: semínimas viram segundos pelo andamento; a humanização
 //!    (0 = exato) adiciona pequenas variações de tempo e de força e destaca
 //!    a nota mais aguda da mão direita (normalmente a melodia);
-//! 5. pé (versão 0): executa as marcações de pedal da partitura, abaixando
-//!    um pouco depois do tempo (pedal sincopado). Decidir sozinho quando
-//!    pedalar fica para depois.
+//! 5. pé: executa as marcações de pedal da partitura e, quando ela não marca
+//!    nenhuma, decide sozinho: troca o sustain quando a harmonia muda (o
+//!    baixo de cada tempo muda de nota) e solta nos silêncios; sempre
+//!    abaixando um pouco depois do tempo (pedal sincopado);
+//! 6. articulações escritas: staccato e staccatissimo encurtam, tenuto liga,
+//!    fermata segura mais, acento toca mais forte; o dedilhado escrito é
+//!    seguido sempre que fisicamente possível;
+//! 7. interpretação: a melodia sai um pouco antes do acompanhamento, o
+//!    primeiro tempo do compasso é mais forte e o contratempo mais leve, e a
+//!    peça desacelera nos dois últimos compassos (ritardando).
 
 use std::collections::BTreeMap;
 
@@ -53,17 +60,74 @@ const ATRASO_PEDAL_S: f64 = 0.06;
 /// Tudo começa um pouco depois de zero, para a humanização poder adiantar.
 pub const INICIO_S: f64 = 0.05;
 
+/// Como o pé decide o pedal de sustain.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Pe {
+    /// as marcações da partitura; se ela não marca nenhuma, decide sozinho
+    #[default]
+    Auto,
+    /// só as marcações da partitura
+    Partitura,
+    /// decide sozinho, ignorando as marcações
+    Automatico,
+    /// nunca pedala
+    Nenhum,
+}
+
+#[derive(Debug, Clone, Copy)]
 pub struct Player {
     /// 0 = exato e repetível; 1 = variações de um pianista humano
     pub humanizacao: f32,
     pub semente: u32,
     /// fração da duração escrita em que a tecla fica abaixada
     pub legato: f64,
+    pub pe: Pe,
 }
 
 impl Default for Player {
     fn default() -> Self {
-        Player { humanizacao: 0.5, semente: 1, legato: 0.95 }
+        Player { humanizacao: 0.5, semente: 1, legato: 0.95, pe: Pe::Auto }
+    }
+}
+
+/// Quando cada posição da partitura é tocada: o andamento escrito mais o
+/// ritardando do fim. Converte nos dois sentidos (a interface usa para pôr o
+/// playhead onde o som está).
+#[derive(Debug, Clone, Default)]
+pub struct RelogioExecucao {
+    /// só os andamentos da partitura
+    andamentos: Partitura,
+    /// ritardando: (início em semínimas, extensão, quanto desacelera no fim)
+    ritardando: (f64, f64, f64),
+}
+
+impl RelogioExecucao {
+    /// Instante (s) em que a posição `tempo` (semínimas) é tocada.
+    pub fn segundos(&self, tempo: f64) -> f64 {
+        let (ini, extensao, a) = self.ritardando;
+        let mut s = INICIO_S + self.andamentos.segundos(tempo);
+        if a > 0.0 && extensao > 0.0 && tempo > ini {
+            // o tempo de cada semínima cresce até (1 + a) no fim: soma da
+            // diferença, a*L*u^3/3 até o fim do trecho e linear depois
+            let seg_por_seminima = 60.0 / self.andamentos.bpm_em(tempo);
+            let u = (tempo - ini) / extensao;
+            let extra = if u <= 1.0 { a * extensao * u.powi(3) / 3.0 } else { a * extensao / 3.0 + a * (tempo - ini - extensao) };
+            s += extra * seg_por_seminima;
+        }
+        s
+    }
+
+    /// O inverso: posição (semínimas) tocada no instante `s`.
+    pub fn tempo_em(&self, s: f64) -> f64 {
+        let (mut lo, mut hi) = (0.0f64, 1.0f64);
+        while self.segundos(hi) < s && hi < 1e7 {
+            hi *= 2.0;
+        }
+        for _ in 0..60 {
+            let m = 0.5 * (lo + hi);
+            if self.segundos(m) < s { lo = m } else { hi = m }
+        }
+        0.5 * (lo + hi)
     }
 }
 
@@ -86,6 +150,9 @@ pub struct Execucao {
     pub roteiro: Roteiro,
     pub notas: Vec<NotaTocada>,
     pub avisos: Vec<String>,
+    /// como o pé pedalou: (abaixa, solta), em semínimas
+    pub pedais: Vec<(f64, f64)>,
+    pub relogio: RelogioExecucao,
 }
 
 /// gerador simples e repetível
@@ -124,15 +191,19 @@ impl Player {
         }
         redistribuir(p, &mut momentos, &mut avisos);
 
-        // 2. dedos, mão por mão
+        // 7. quando cada posição é tocada (com o ritardando do fim)
+        let h = self.humanizacao as f64;
+        let relogio = relogio_da_execucao(p, h);
+
+        // 2. dedos, mão por mão (seguindo o dedo escrito quando houver)
         let mut tocadas = Vec::new();
         let mut acaso = Acaso(self.semente);
-        let h = self.humanizacao as f64;
         for mao in [Mao::Esquerda, Mao::Direita] {
             let da_mao: Vec<(&i64, &Vec<usize>)> =
                 momentos.iter().filter(|((m, _), _)| *m == mao).map(|((_, t), v)| (t, v)).collect();
-            let teclas: Vec<Vec<u8>> = da_mao.iter().map(|(_, idx)| idx.iter().map(|&i| p.notas[i].tecla).collect()).collect();
-            let posicoes = dedilhado::dedilhar(mao, &teclas);
+            let teclas: Vec<Vec<(u8, Option<u8>)>> =
+                da_mao.iter().map(|(_, idx)| idx.iter().map(|&i| (p.notas[i].tecla, p.notas[i].dedo)).collect()).collect();
+            let posicoes = dedilhado::dedilhar_com_sugestoes(mao, &teclas);
 
             for ((_, idx), pos) in da_mao.iter().zip(&posicoes) {
                 let tempo = p.notas[idx[0]].inicio;
@@ -146,8 +217,9 @@ impl Player {
                     ));
                 }
                 // 4. tempo: o acorde inteiro varia junto, cada nota um pouco
-                let base = INICIO_S + p.segundos(tempo) + 0.010 * h * acaso.normal();
+                let base = relogio.segundos(tempo) + 0.010 * h * acaso.normal();
                 let aguda = *pos.teclas.last().unwrap();
+                let acento_metrico = acento_metrico(p, tempo) * h as f32;
                 for (k, (&tecla, &dedo)) in pos.teclas.iter().zip(&pos.dedos).enumerate() {
                     // a mesma tecla escrita em duas vozes é tocada uma vez,
                     // segurada pela maior das durações
@@ -158,13 +230,30 @@ impl Player {
                         .unwrap();
                     let nota = &p.notas[indice];
                     let arpejo = if pos.cabe { 0.0 } else { ARPEJO_S * k as f64 };
-                    let inicio_s = (base + arpejo + 0.003 * h * acaso.normal()).max(0.0);
-                    let escrito = p.segundos(nota.inicio + nota.duracao) - p.segundos(nota.inicio);
-                    let melodia = if mao == Mao::Direita && tecla == aguda && pos.teclas.len() > 1 { 0.06 } else { 0.0 };
-                    let vel = (nota.dinamica + melodia + 0.04 * h as f32 * acaso.normal() as f32).clamp(0.05, 1.0);
+                    // a melodia (a nota mais aguda da mão direita num acorde)
+                    // sai um pouco antes e mais forte
+                    let e_melodia = mao == Mao::Direita && tecla == aguda && pos.teclas.len() > 1;
+                    let adianta = if e_melodia { 0.012 * h } else { 0.0 };
+                    let inicio_s = (base + arpejo - adianta + 0.003 * h * acaso.normal()).max(0.0);
+                    let escrito = relogio.segundos(nota.inicio + nota.duracao) - relogio.segundos(nota.inicio);
+                    let melodia = if e_melodia { 0.06 } else { 0.0 };
+                    // 6. articulações
+                    let art = nota.articulacao;
+                    let ligado = if art.staccatissimo {
+                        0.25
+                    } else if art.staccato {
+                        0.45
+                    } else if art.tenuto {
+                        1.0
+                    } else {
+                        self.legato
+                    };
+                    let segura = if art.fermata { 1.6 } else { 1.0 };
+                    let acento = if art.acento { 0.15 } else { 0.0 };
+                    let vel = (nota.dinamica + melodia + acento + acento_metrico + 0.04 * h as f32 * acaso.normal() as f32).clamp(0.05, 1.0);
                     tocadas.push(NotaTocada {
                         inicio_s,
-                        fim_s: inicio_s + escrito * self.legato,
+                        fim_s: inicio_s + escrito * ligado * segura,
                         tecla,
                         mao,
                         dedo,
@@ -198,9 +287,133 @@ impl Player {
             let tempo = |s: &str| s.split(':').next().and_then(|t| t.trim_start_matches("tempo ").replace(',', ".").parse::<f64>().ok());
             tempo(a).unwrap_or(0.0).total_cmp(&tempo(b).unwrap_or(0.0))
         });
-        let roteiro = montar_roteiro(p, &tocadas, taxa);
-        Execucao { roteiro, notas: tocadas, avisos }
+        // 5. pé
+        let pedais = match self.pe {
+            Pe::Auto if p.pedais.is_empty() => pedal_automatico(p),
+            Pe::Auto | Pe::Partitura => p.pedais.clone(),
+            Pe::Automatico => pedal_automatico(p),
+            Pe::Nenhum => Vec::new(),
+        };
+        let roteiro = montar_roteiro(&relogio, &pedais, &tocadas, taxa);
+        Execucao { roteiro, notas: tocadas, avisos, pedais, relogio }
     }
+}
+
+/// Ritardando nos dois últimos compassos: no fim, cada semínima dura até
+/// 35% mais (com humanização 1).
+fn relogio_da_execucao(p: &Partitura, h: f64) -> RelogioExecucao {
+    let andamentos = Partitura { andamentos: p.andamentos.clone(), ..Partitura::default() };
+    let fim = p.fim();
+    let inicios = p.inicios_de_compasso(fim);
+    let ini = if inicios.len() >= 3 { inicios[inicios.len() - 2].min(fim) } else { fim * 0.75 };
+    let ini = if fim - ini < 1.0 { (fim - 4.0).max(0.0) } else { ini };
+    RelogioExecucao { andamentos, ritardando: (ini, (fim - ini).max(0.0), 0.35 * h) }
+}
+
+/// Acento métrico (com humanização 1): primeiro tempo do compasso mais
+/// forte, terceiro de um compasso de 4 um pouco, contratempos mais leves.
+fn acento_metrico(p: &Partitura, tempo: f64) -> f32 {
+    let (_, no_compasso) = p.compasso_e_tempo(tempo);
+    let (tempos, _) = p.formula_em(tempo);
+    let batida = no_compasso.round();
+    if (no_compasso - batida).abs() > 1e-6 {
+        -0.02
+    } else if batida == 1.0 {
+        0.05
+    } else if tempos == 4 && batida == 3.0 {
+        0.025
+    } else {
+        0.0
+    }
+}
+
+/// Cabe num acorde? (as classes de nota, como bits 0..11, formam um
+/// subconjunto de uma tríade ou de um acorde de sétima em alguma fundamental)
+fn cabe_num_acorde(classes: u16) -> bool {
+    const ACORDES: [&[u16]; 10] = [
+        &[0, 4, 7],      // maior
+        &[0, 3, 7],      // menor
+        &[0, 3, 6],      // diminuta
+        &[0, 4, 8],      // aumentada
+        &[0, 5, 7],      // suspensa
+        &[0, 4, 7, 10],  // dominante com sétima
+        &[0, 4, 7, 11],  // maior com sétima maior
+        &[0, 3, 7, 10],  // menor com sétima
+        &[0, 3, 6, 10],  // meio-diminuto
+        &[0, 3, 6, 9],   // diminuto com sétima
+    ];
+    (0..12u16).any(|raiz| {
+        ACORDES.iter().any(|a| {
+            let molde = a.iter().fold(0u16, |m, i| m | 1 << ((raiz + i) % 12));
+            classes & !molde == 0
+        })
+    })
+}
+
+/// O pé decide o sustain sozinho, pela harmonia da mão esquerda: mantém o
+/// pedal enquanto as notas acumuladas no trecho ainda cabem num acorde, e
+/// troca quando deixam de caber ou quando o baixo muda num tempo forte (o 1º
+/// do compasso, ou o 3º num compasso de 4); solta nos silêncios. Assim um
+/// baixo de Alberti (Dó-Sol-Mi-Sol) fica num pedal só, e Dó maior seguido de
+/// Lá menor troca o pedal.
+pub fn pedal_automatico(p: &Partitura) -> Vec<(f64, f64)> {
+    let fim = p.fim();
+    if fim <= 0.0 {
+        return Vec::new();
+    }
+    // a harmonia vem da pauta de baixo; peças de uma pauta só usam tudo
+    let tem_baixo = p.notas.iter().any(|n| n.pauta == Pauta::Inferior);
+    let harmonia = |n: &&crate::partitura::Nota| !tem_baixo || n.pauta == Pauta::Inferior;
+
+    let inicios = p.inicios_de_compasso(fim);
+    // batidas: (instante, é tempo forte)
+    let mut batidas = Vec::new();
+    for (i, &ini) in inicios.iter().enumerate() {
+        let proximo = inicios.get(i + 1).copied().unwrap_or(fim);
+        let (tempos, unidade) = p.formula_em(ini);
+        let passo = 4.0 / unidade as f64;
+        let mut t = ini;
+        let mut k = 0;
+        while t < proximo - 1e-9 && t < fim {
+            batidas.push((t, k == 0 || (tempos == 4 && k == 2)));
+            t += passo;
+            k += 1;
+        }
+    }
+    let mut trechos = Vec::new();
+    // trecho de pedal em curso: (início, classes de nota acumuladas, baixo)
+    let mut atual: Option<(f64, u16, u8)> = None;
+    for (j, &(b, forte)) in batidas.iter().enumerate() {
+        let b_fim = batidas.get(j + 1).map_or(fim, |x| x.0);
+        let soando = p.notas.iter().any(|n| n.inicio < b_fim - 1e-9 && n.inicio + n.duracao > b + 1e-9);
+        if !soando {
+            // silêncio: o pé solta
+            if let Some((ini, _, _)) = atual.take() {
+                trechos.push((ini, b));
+            }
+            continue;
+        }
+        let novas: Vec<u8> = p.notas.iter().filter(harmonia).filter(|n| n.inicio >= b - 1e-9 && n.inicio < b_fim - 1e-9).map(|n| n.tecla).collect();
+        let Some(&grave) = novas.iter().min() else { continue };
+        let classes = novas.iter().fold(0u16, |m, t| m | 1 << (t % 12));
+        let baixo = grave % 12;
+        atual = match atual {
+            None => Some((b, classes, baixo)),
+            Some((ini, acumuladas, baixo_atual)) => {
+                let juntas = acumuladas | classes;
+                if !cabe_num_acorde(juntas) || (forte && baixo != baixo_atual) {
+                    trechos.push((ini, b));
+                    Some((b, classes, baixo))
+                } else {
+                    Some((ini, juntas, baixo_atual))
+                }
+            }
+        };
+    }
+    if let Some((ini, _, _)) = atual {
+        trechos.push((ini, fim));
+    }
+    trechos
 }
 
 /// Mais de 5 notas numa mão: as que sobram (as mais graves da direita, as
@@ -231,7 +444,7 @@ fn redistribuir(p: &Partitura, momentos: &mut BTreeMap<(Mao, i64), Vec<usize>>, 
     }
 }
 
-fn montar_roteiro(p: &Partitura, tocadas: &[NotaTocada], taxa: u32) -> Roteiro {
+fn montar_roteiro(relogio: &RelogioExecucao, pedais: &[(f64, f64)], tocadas: &[NotaTocada], taxa: u32) -> Roteiro {
     let mut r = Roteiro::new(taxa);
     let mut fim = 0f64;
     for n in tocadas {
@@ -240,9 +453,9 @@ fn montar_roteiro(p: &Partitura, tocadas: &[NotaTocada], taxa: u32) -> Roteiro {
         fim = fim.max(n.fim_s);
     }
     // 5. pé: pedal sincopado, abaixa logo depois do golpe
-    for &(abaixa, solta) in &p.pedais {
-        r.pedal(INICIO_S + p.segundos(abaixa) + ATRASO_PEDAL_S, Pedal::Sustain, 1.0);
-        let t = INICIO_S + p.segundos(solta);
+    for &(abaixa, solta) in pedais {
+        r.pedal(relogio.segundos(abaixa) + ATRASO_PEDAL_S, Pedal::Sustain, 1.0);
+        let t = relogio.segundos(solta);
         r.pedal(t, Pedal::Sustain, 0.0);
         fim = fim.max(t);
     }
@@ -354,12 +567,112 @@ mod testes {
     #[test]
     fn mesma_tecla_em_duas_vozes_e_tocada_uma_vez() {
         use crate::partitura::{Nota, Pauta};
-        let n = |tecla, duracao, voz| Nota { inicio: 0.0, duracao, tecla, pauta: Pauta::Superior, dinamica: 0.5, voz };
+        let n = |tecla, duracao, voz| Nota { duracao, tecla, pauta: Pauta::Superior, dinamica: 0.5, voz, ..Nota::default() };
         let p = Partitura { notas: vec![n(40, 1.0, 1), n(40, 3.0, 2), n(44, 1.0, 1)], ..Partitura::default() };
         let e = exato().tocar(&p, TAXA);
         assert_eq!(e.notas.len(), 2);
         let mi = e.notas.iter().find(|t| t.tecla == 40).unwrap();
         assert_eq!(mi.indice, 1, "segura pela maior duração");
+    }
+
+    use crate::partitura::{Articulacao, Nota};
+
+    fn nota_em(inicio: f64, duracao: f64, nome: &str, pauta: Pauta) -> Nota {
+        let tecla = corda::tecla_de_nome(nome).unwrap() as u8;
+        Nota { inicio, duracao, tecla, pauta, dinamica: 0.5, voz: if pauta == Pauta::Superior { 1 } else { 5 }, ..Nota::default() }
+    }
+
+    #[test]
+    fn pe_troca_o_pedal_quando_a_harmonia_muda() {
+        // 2 compassos de Dó em baixo de Alberti (C-G-E-G em colcheias), 1 de
+        // Sol (G-D-B-D), uma pausa de compasso inteiro e um acorde final
+        let mut notas = Vec::new();
+        let alberti = |base: [&str; 4], ini: f64, notas: &mut Vec<Nota>| {
+            for i in 0..8 {
+                notas.push(nota_em(ini + i as f64 * 0.5, 0.5, base[i % 4], Pauta::Inferior));
+            }
+        };
+        alberti(["C3", "G3", "E3", "G3"], 0.0, &mut notas);
+        alberti(["C3", "G3", "E3", "G3"], 4.0, &mut notas);
+        alberti(["G2", "D3", "B2", "D3"], 8.0, &mut notas);
+        notas.push(nota_em(16.0, 4.0, "C3", Pauta::Inferior));
+        let p = Partitura { notas, ..Partitura::default() };
+        let pedais = pedal_automatico(&p);
+        // Dó (0 a 8), Sol (8 a 12), solta na pausa, Dó final (16 a 20)
+        assert_eq!(pedais, [(0.0, 8.0), (8.0, 12.0), (16.0, 20.0)], "{pedais:?}");
+        // Dó maior e depois Lá menor (cabem juntos em Lá menor com sétima, mas o
+        // baixo muda no tempo forte): troca
+        let p2 = Partitura {
+            notas: vec![nota_em(0.0, 4.0, "C3", Pauta::Inferior), nota_em(0.0, 4.0, "E3", Pauta::Inferior), nota_em(0.0, 4.0, "G3", Pauta::Inferior),
+                        nota_em(4.0, 4.0, "A2", Pauta::Inferior), nota_em(4.0, 4.0, "E3", Pauta::Inferior)],
+            ..Partitura::default()
+        };
+        assert_eq!(pedal_automatico(&p2), [(0.0, 4.0), (4.0, 8.0)]);
+        // sem marcações na partitura, o pé automático entra sozinho
+        let e = exato().tocar(&p, TAXA);
+        assert_eq!(e.pedais, pedais);
+        let so_partitura = Player { pe: Pe::Partitura, ..exato() }.tocar(&p, TAXA);
+        assert!(so_partitura.pedais.is_empty());
+        let nenhum = Player { pe: Pe::Nenhum, ..exato() }.tocar(&exemplo("acordes").unwrap(), TAXA);
+        assert!(nenhum.roteiro.eventos.iter().all(|x| !matches!(x.evento, Evento::Pedal { .. })));
+    }
+
+    #[test]
+    fn acordes_reconhecidos() {
+        let c = |notas: &[u16]| notas.iter().fold(0u16, |m, n| m | 1 << (n % 12));
+        assert!(cabe_num_acorde(c(&[0, 4, 7]))); // Dó maior
+        assert!(cabe_num_acorde(c(&[9, 0, 4]))); // Lá menor
+        assert!(cabe_num_acorde(c(&[7, 11, 2, 5]))); // Sol com sétima
+        assert!(cabe_num_acorde(c(&[0, 7]))); // quinta solta
+        assert!(!cabe_num_acorde(c(&[0, 2, 4]))); // Dó-Ré-Mi: não é acorde
+        assert!(!cabe_num_acorde(c(&[0, 4, 7, 2, 11]))); // Dó + Sol maior
+    }
+
+    #[test]
+    fn articulacoes_mudam_duracao_e_forca() {
+        let mut notas: Vec<Nota> = ["C4", "D4", "E4", "F4"].iter().enumerate().map(|(i, n)| nota_em(i as f64, 1.0, n, Pauta::Superior)).collect();
+        notas[1].articulacao = Articulacao { staccato: true, ..Articulacao::default() };
+        notas[2].articulacao = Articulacao { acento: true, ..Articulacao::default() };
+        notas[3].articulacao = Articulacao { fermata: true, ..Articulacao::default() };
+        let p = Partitura { notas, ..Partitura::default() };
+        let e = Player { pe: Pe::Nenhum, ..exato() }.tocar(&p, TAXA);
+        let dur = |i: usize| e.notas.iter().find(|n| n.indice == i).map(|n| n.fim_s - n.inicio_s).unwrap();
+        let vel = |i: usize| e.notas.iter().find(|n| n.indice == i).unwrap().vel;
+        assert!(dur(1) < 0.6 * dur(0), "staccato");
+        assert!(vel(2) > vel(0) + 0.1, "acento");
+        assert!(dur(3) > 1.4 * dur(0), "fermata");
+    }
+
+    #[test]
+    fn ritardando_no_fim_e_relogio_nos_dois_sentidos() {
+        let p = exemplo("escala").unwrap();
+        let e = Player { humanizacao: 1.0, ..Player::default() }.tocar(&p, TAXA);
+        let r = &e.relogio;
+        let fim = p.fim();
+        // no começo segue o andamento escrito; no fim, atrasa
+        assert!((r.segundos(1.0) - (INICIO_S + p.segundos(1.0))).abs() < 1e-9);
+        assert!(r.segundos(fim) > INICIO_S + p.segundos(fim) + 0.1);
+        for t in [0.0, 3.0, fim - 2.0, fim] {
+            assert!((r.tempo_em(r.segundos(t)) - t).abs() < 1e-6, "{t}");
+        }
+    }
+
+    #[test]
+    fn melodia_sai_antes_do_acompanhamento() {
+        let p = exemplo("acordes").unwrap();
+        let e = Player { humanizacao: 1.0, semente: 7, ..Player::default() }.tocar(&p, TAXA);
+        // em cada acorde da direita, a mais aguda tende a sair antes das outras
+        let mut adiantada = 0;
+        let mut total = 0;
+        for t in [0.0, 2.0, 4.0, 6.0, 8.0] {
+            let mut d: Vec<&NotaTocada> = e.notas.iter().filter(|n| n.mao == Mao::Direita && n.tempo == t).collect();
+            d.sort_by_key(|n| n.tecla);
+            let aguda = d.last().unwrap().inicio_s;
+            let resto = d[..d.len() - 1].iter().map(|n| n.inicio_s).sum::<f64>() / (d.len() - 1) as f64;
+            adiantada += (aguda < resto) as usize;
+            total += 1;
+        }
+        assert!(adiantada >= 4, "{adiantada} de {total}");
     }
 
     #[test]

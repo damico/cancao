@@ -31,6 +31,7 @@ pub mod musicxml;
 pub mod notacao;
 pub mod partitura;
 pub mod player;
+pub mod ressonancia;
 pub mod roteiro;
 pub mod synth;
 pub mod tampo;

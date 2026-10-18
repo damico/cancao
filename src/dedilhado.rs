@@ -276,28 +276,48 @@ pub struct Posicao {
 /// Escolhe os dedos de uma sequência de momentos de uma mão. Cada momento
 /// tem de 1 a 5 teclas.
 pub fn dedilhar(mao: Mao, momentos: &[Vec<u8>]) -> Vec<Posicao> {
+    let sem_sugestao: Vec<Vec<(u8, Option<u8>)>> = momentos.iter().map(|m| m.iter().map(|&t| (t, None)).collect()).collect();
+    dedilhar_com_sugestoes(mao, &sem_sugestao)
+}
+
+/// Contrariar o dedo escrito na partitura custa isto: o player segue o
+/// editor, a menos que seja fisicamente impraticável.
+const CUSTO_CONTRARIAR_DEDO: f32 = 40.0;
+
+/// Como [`dedilhar`], mas cada tecla pode trazer o dedo escrito na partitura.
+pub fn dedilhar_com_sugestoes(mao: Mao, momentos: &[Vec<(u8, Option<u8>)>]) -> Vec<Posicao> {
     // estados possíveis de cada momento: dedos em ordem com as alturas
     // espelhadas (na mão esquerda o polegar fica na nota mais aguda)
-    let preparados: Vec<(Vec<u8>, Vec<Toque>, Vec<Vec<u8>>)> = momentos
+    #[allow(clippy::type_complexity)]
+    let preparados: Vec<(Vec<u8>, Vec<Toque>, Vec<Vec<u8>>, Vec<Option<u8>>)> = momentos
         .iter()
         .map(|m| {
-            let mut teclas = m.clone();
+            let mut teclas: Vec<u8> = m.iter().map(|x| x.0).collect();
             teclas.sort_unstable();
             teclas.dedup();
             let mut toques: Vec<Toque> = teclas.iter().map(|&t| toque(mao, t)).collect();
             toques.sort_by_key(|t| t.altura);
+            // dedo escrito de cada tecla, na mesma ordem dos toques (na mão
+            // esquerda a ordem das alturas é a inversa da das teclas)
+            let mut sugestoes: Vec<Option<u8>> = teclas.iter().map(|t| m.iter().find(|x| x.0 == *t).and_then(|x| x.1)).collect();
+            if mao == Mao::Esquerda {
+                sugestoes.reverse();
+            }
             // a mesma tecla em duas vozes é abaixada uma vez só: os dedos são
             // escolhidos para as teclas distintas
             let k = teclas.len().clamp(1, 5);
-            (teclas, toques, combinacoes(k))
+            (teclas, toques, combinacoes(k), sugestoes)
         })
         .collect();
 
     // custo de um estado: posição + (se não cabe) penalidade grande, para o
-    // acorde ainda receber dedos e ser arpejado
-    let custo_estado = |toques: &[Toque], dedos: &[u8]| {
+    // acorde ainda receber dedos e ser arpejado + dedos escritos contrariados
+    let custo_estado = |i: usize, dedos: &[u8]| {
+        let (_, toques, _, sugestoes) = &preparados[i];
         let c = custo_posicao(dedos, toques);
-        if c.is_finite() { c } else { 1000.0 }
+        let base = if c.is_finite() { c } else { 1000.0 };
+        let contrariados = dedos.iter().zip(sugestoes).filter(|(d, s)| s.is_some_and(|s| s != **d)).count();
+        base + CUSTO_CONTRARIAR_DEDO * contrariados as f32
     };
     // as regras de pares e de trios valem nas linhas da nota mais grave e da
     // mais aguda de cada momento (iguais numa melodia de notas soltas)
@@ -342,7 +362,7 @@ pub fn dedilhar(mao: Mao, momentos: &[Vec<u8>]) -> Vec<Posicao> {
     // com o estado p no momento anterior e e no atual
     let mut escolha = vec![0usize; n];
     if n == 1 {
-        let base: Vec<f32> = estados(0).iter().map(|d| custo_estado(toques(0), d)).collect();
+        let base: Vec<f32> = estados(0).iter().map(|d| custo_estado(0, d)).collect();
         escolha[0] = (0..base.len()).min_by(|&a, &b| base[a].total_cmp(&base[b])).unwrap();
     } else {
         let mut custo: Vec<Vec<f32>> = estados(0)
@@ -350,7 +370,7 @@ pub fn dedilhar(mao: Mao, momentos: &[Vec<u8>]) -> Vec<Posicao> {
             .map(|d0| {
                 estados(1)
                     .iter()
-                    .map(|d1| custo_estado(toques(0), d0) + custo_estado(toques(1), d1) + custo_transicao(toques(0), d0, toques(1), d1))
+                    .map(|d1| custo_estado(0, d0) + custo_estado(1, d1) + custo_transicao(toques(0), d0, toques(1), d1))
                     .collect()
             })
             .collect();
@@ -362,7 +382,7 @@ pub fn dedilhar(mao: Mao, momentos: &[Vec<u8>]) -> Vec<Posicao> {
             let mut de = vec![vec![0usize; e2.len()]; e1.len()];
             for (p, d1) in e1.iter().enumerate() {
                 for (e, d2) in e2.iter().enumerate() {
-                    let local = custo_estado(toques(i), d2) + custo_transicao(toques(i - 1), d1, toques(i), d2);
+                    let local = custo_estado(i, d2) + custo_transicao(toques(i - 1), d1, toques(i), d2);
                     for (q, d0) in estados(i - 2).iter().enumerate() {
                         let c = custo[q][p] + local + custo_tres(toques(i - 2), d0, toques(i - 1), d1, toques(i), d2);
                         if c < novo[p][e] {
@@ -395,7 +415,7 @@ pub fn dedilhar(mao: Mao, momentos: &[Vec<u8>]) -> Vec<Posicao> {
     preparados
         .iter()
         .zip(&escolha)
-        .map(|((teclas, toques, estados), &e)| {
+        .map(|((teclas, toques, estados, _), &e)| {
             let dedos_por_altura = &estados[e];
             // de volta à ordem crescente das teclas (na esquerda a ordem inverte)
             let mut dedos = dedos_por_altura.clone();
@@ -446,6 +466,19 @@ mod testes {
         assert!(p[0].cabe);
         let p = dedilhar(Mao::Direita, &[vec![c("C4"), c("E4"), c("G4"), c("C5")]]);
         assert_eq!(p[0].dedos, [1, 2, 3, 5]);
+    }
+
+    #[test]
+    fn segue_o_dedo_escrito() {
+        // escala de Dó com o 4 escrito no Fá (dedilhado alternativo de editor)
+        let c = |n| tecla_de_nome(n).unwrap() as u8;
+        let mut m: Vec<Vec<(u8, Option<u8>)>> = ["C4", "D4", "E4", "F4", "G4"].iter().map(|n| vec![(c(n), None)]).collect();
+        m[3][0].1 = Some(4);
+        let p = dedilhar_com_sugestoes(Mao::Direita, &m);
+        assert_eq!(p[3].dedos, [4], "segue o 4 escrito no Fá");
+        // na mão esquerda, num acorde, o dedo vai para a tecla certa
+        let p = dedilhar_com_sugestoes(Mao::Esquerda, &[vec![(c("C3"), Some(5)), (c("E3"), Some(2)), (c("G3"), None)]]);
+        assert_eq!(p[0].dedos[..2], [5, 2]);
     }
 
     #[test]

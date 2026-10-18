@@ -26,6 +26,8 @@ rtrb = "0.3.1"
 crossterm = "0.28.1"
 libc = "0.2"
 roxmltree = "0.20.0"
+# MusicXML comprimido (.mxl)
+zip = { version = "2.2.2", default-features = false, features = ["deflate"] }
 slint = { version = "1.18.1", optional = true, features = ["renderer-software"] }
 png = { version = "0.17.16", optional = true }
 # diálogo de abrir arquivo do sistema (no Linux, pelo xdg-desktop-portal)

@@ -113,6 +113,8 @@ interface funciona igual, sem som.
 
 ![Partitura em tela cheia](docs/partitura-tela-cheia.png)
 
+![Partitura alinhada ao tempo do piano roll: cada nota acima da sua barra, cursor e playhead na mesma reta](docs/partitura-alinhada.png)
+
 Acima do piano roll fica a partitura tradicional (claves, compassos,
 ligaduras, pausas, dinâmicas, articulações), gravada pelo
 [Verovio](https://www.verovio.org) a partir do mesmo MusicXML e sincronizada
@@ -122,7 +124,14 @@ com o mesmo relógio do motor de áudio:
   sistema atual; o expandido, vários (arraste a divisória para ajustar); a
   tela cheia esconde o piano roll. Trocar de modo nunca interrompe o som.
 - **Seguir execução**: a partitura acompanha o playhead sistema a sistema,
-  mostrando o próximo antes de a linha acabar; também segue os saltos.
+  mostrando o próximo antes de a linha acabar; também segue os saltos. Um
+  cursor dourado anda pela partitura entre as colunas de notas.
+- **Alinhar ao tempo** (liga/desliga): a partitura vira uma tira alinhada ao
+  piano roll, com a mesma régua de tempo, o mesmo zoom e a mesma rolagem:
+  cada nota fica exatamente acima da sua barra no roll e o cursor da
+  partitura continua o playhead na mesma reta. As cabeças de nota ficam em
+  escala 1; só o espaço entre as colunas de notas estica ou encolhe (onde não
+  cabe, o trecho é comprimido), e os sistemas da partitura ficam lado a lado.
 - **- / +**: tamanho da notação (a partitura é diagramada de novo).
 - As notas que soam ficam em dourado; a selecionada, em azul.
 - **Navegação nos dois sentidos**: clicar numa nota da partitura leva o
@@ -155,6 +164,7 @@ documentação e testes (as imagens deste README foram geradas assim, com
 
     ./target/release/piano --gui-captura roll.png --gui-posicao 9.5   # playhead na semínima 9,5
     ./target/release/piano --gui-captura roll.png --gui-partitura expandida   # oculta, compacta, expandida, cheia
+    ./target/release/piano --gui-captura roll.png --gui-alinhada              # partitura alinhada ao tempo
 
 ## Usar
 
@@ -168,10 +178,12 @@ documentação e testes (as imagens deste README foram geradas assim, com
     ./target/release/piano --musicxml arq.musicxml   # o player toca um MusicXML
     ./target/release/piano --partitura escala        # partituras embutidas: escala, acordes, desafios
     ./target/release/piano --humanizar 0.5           # variações humanas do player (0 = exato)
+    ./target/release/piano --pe automatico           # o pé decide o pedal (auto, partitura, automatico, nenhum)
     ./target/release/piano --bench          # tempo de síntese, pior caso
     ./target/release/piano --listar         # dispositivos de saída
     ./target/release/piano --modelo guia    # corda em guia de onda (padrão: modal)
     ./target/release/piano --sem-tampo      # só as cordas, sem tampo/sala
+    ./target/release/piano --sem-ressonancia  # sem a ressonância simpática
     ./target/release/piano --tampo ir.wav   # resposta ao impulso gravada
     ./target/release/piano --tensao 1.02    # cordas 2% mais tensas (aproximadamente +17 cents)
 
@@ -234,8 +246,15 @@ Etapas do guia de onda:
    estágios medido: A4 cai 13 dB/s no início e 2,3 dB/s no pós-som, contra
    1,9 dB/s previstos pela perda própria da corda; com una corda, a corda
    não atingida vibra só pelo cavalete)
-5. Ressonância simpática entre notas diferentes (cordas livres com o
-   sustain, excitadas pelo cavalete)
+5. ~~Ressonância simpática entre notas diferentes~~ (`src/ressonancia.rs`:
+   uma corda livre simplificada por tecla, afinada e com as perdas da
+   corda real, sem a cascata de dispersão; a entrada é o movimento do
+   cavalete e a saída volta para o tampo. Só ressoam as cordas com o
+   abafador levantado (sustain, tecla abaixada, sostenuto e as teclas do
+   F#6 para cima, que não têm abafador). Medido: com sustain, a cauda de um
+   acorde fica 1,3 dB mais rica; sem pedal, as cordas sem abafador deixam
+   um halo cerca de 60 dB abaixo da nota; uma corda cujo parcial coincide
+   com o que soa ressoa mais de 10 vezes mais que uma sem coincidência)
 
 A calibrar no martelo: nos graves o contato sai com ~1,5 ms em mf, abaixo
 dos 2 a 4 ms da literatura.
@@ -244,18 +263,22 @@ dos 2 a 4 ms da literatura.
 
 Leitor simplificado de MusicXML 4.0 (`src/musicxml.rs`). Entende:
 
-- `score-partwise` não comprimido (`.musicxml` ou `.xml`);
+- `score-partwise`, não comprimido (`.musicxml` ou `.xml`) ou comprimido
+  (`.mxl`, lendo o `META-INF/container.xml`);
 - notas com `pitch` (`step`, `alter`, `octave`) e `duration`, pausas,
   `chord`, `backup`, `forward` e mudanças de `divisions`;
 - `staff`: 1 = pauta de cima (mão direita), 2 = pauta de baixo; sem
   `staff`, a 1ª parte vai para cima e as demais para baixo;
 - ligaduras de prolongamento (`tie` start/stop): viram uma nota só;
-- andamento (`sound tempo`), dinâmicas (`pppp` a `ffff`) e pedal de sustain
-  (`pedal` start/stop/change).
+- andamento (`sound tempo`), dinâmicas (`pppp` a `ffff`), crescendo e
+  diminuendo graduais (`wedge`, interpolando até a dinâmica seguinte) e
+  pedal de sustain (`pedal` start/stop/change);
+- articulações: `staccato`, `staccatissimo`, `accent`, `tenuto` e
+  `fermata`;
+- dedilhado escrito (`technical/fingering`, 1 a 5): o player o segue.
 
-Ignora sem erro: `voice`, notas de ornamento (`grace`), articulações,
-ornamentos, repetições, `offset` de direções, letras e diagramação. Não lê
-`score-timewise` nem o formato comprimido `.mxl`.
+Ignora sem erro: notas de ornamento (`grace`), ornamentos, repetições,
+`offset` de direções, letras e diagramação. Não lê `score-timewise`.
 
 O exemplo `exemplos/ode.musicxml` usa todos esses elementos.
 
@@ -286,10 +309,23 @@ entre os dois só passam eventos.
    novo depois de solta.
 4. **Tempo e força:** semínimas viram segundos pelo andamento; a
    humanização (`--humanizar`, 0 = exato e repetível) varia levemente tempo e
-   força e destaca a nota mais aguda da mão direita (a melodia).
-5. **Pé (versão 0):** executa as marcações de pedal da partitura, abaixando
-   60 ms depois do tempo (pedal sincopado). Decidir sozinho quando pedalar
-   fica para uma próxima etapa.
+   força, destaca a nota mais aguda da mão direita (a melodia) e a adianta
+   alguns ms do acompanhamento (como fazem os pianistas), acentua os tempos
+   fortes do compasso e alarga o andamento nos dois últimos compassos
+   (ritardando final). A interface usa o mesmo relógio, então o playhead
+   acompanha o ritardando.
+5. **Articulações:** staccatissimo segura 25% da nota, staccato 45%, tenuto
+   a nota inteira e o resto em legato; acento soma força; fermata alonga a
+   nota. O dedilhado escrito na partitura é seguido (contrariá-lo custa
+   caro no modelo de Parncutt, mas um dedo impossível ainda é trocado).
+6. **Pé** (`--pe`): `partitura` executa as marcações de pedal, abaixando
+   60 ms depois do tempo (pedal sincopado); `automatico` decide sozinho:
+   acumula as classes de notas da harmonia (da pauta de baixo, se houver)
+   enquanto elas cabem num acorde conhecido (tríades, sétimas, sus, com
+   quintas e baixos repetidos de baixo de Alberti) e troca o pedal quando a
+   harmonia muda ou o baixo muda num tempo forte; solta no silêncio. `auto`
+   (padrão) usa as marcações quando a partitura as tem e decide sozinho
+   quando não; `nenhum` não pedala.
 
 ## Pedais
 
@@ -320,6 +356,7 @@ eventos internos (`eventos::de_midi`), para quando houver entrada MIDI.
 | `src/corda.rs`   | física: L, μ, T, f, B de cada tecla                        |
 | `src/eventos.rs` | interface entre quem toca e o instrumento; tradução MIDI   |
 | `src/roteiro.rs` | performance pronta (eventos com horário): demos e testes   |
+| `src/ressonancia.rs` | ressonância simpática: as cordas livres excitadas pelo cavalete |
 | `src/partitura.rs` | o que está escrito: notas, pautas, andamento, pedal; exemplos |
 | `src/musicxml.rs` | leitor simplificado de MusicXML 4.0                        |
 | `src/player.rs`  | o pianista: mãos, corpo, tempo, força, pé                  |
@@ -357,11 +394,13 @@ contém o instante (resolução de 2,7 ms).
 
 1. ~~Portar para Rust~~
 2. ~~Interface de eventos completa e pedais no instrumento~~
-3. Guia de onda digital (corda simulada como ondas viajantes), em andamento
+3. ~~Guia de onda digital (corda simulada como ondas viajantes)~~ (etapas 1 a 5)
 4. ~~Partitura + MusicXML 4.0 simplificado~~ (versão inicial)
 5. ~~Player: duas mãos, cinco dedos (dedilhado, tempo, dinâmica)~~ (versão inicial)
 6. ~~GUI em Slint~~ (piano roll, primeira versão: visualização e transporte)
-7. Pé nos pedais, interpretação mais humana
+7. ~~Pé nos pedais, interpretação mais humana~~ (versão inicial: pedal
+   automático pela harmonia, melodia adiantada, acentos métricos,
+   ritardando final, articulações)
 
 ## Pendências
 
@@ -392,8 +431,10 @@ feitas durante o desenvolvimento.
 
 ### Som
 
-- **Ressonância simpática entre notas** (etapa 5 do guia de onda): com o
-  sustain, as cordas livres de outras notas deveriam vibrar pelo cavalete.
+- **Ressonância simpática simplificada:** as cordas livres não têm
+  dispersão nem uníssono (uma corda por tecla), não se excitam umas às
+  outras e o acoplamento (0,0002) foi ajustado de ouvido e pela medida da
+  cauda, não por gravação. Uma tecla que soa como voz não ressoa à parte.
 - **Desafinação do uníssono no guia de onda** é bem menor que no modal (0,2 e
   -0,13 cent contra 0,9 e -0,6): os dois estágios só aparecem com
   desafinação pequena perto do acoplamento. Efeitos: quase não há batimento
@@ -405,7 +446,8 @@ feitas durante o desenvolvimento.
   delas vem das duas polarizações da corda (vertical e horizontal), não
   modeladas.
 - **Custo:** o acoplamento dobrou o custo do guia de onda (de ~4% para ~8,5%
-  do prazo do bloco com 32 vozes); aceito em troca da qualidade.
+  do prazo do bloco com 32 vozes); a ressonância simpática leva a ~11% com
+  sustain (pico de ~30%). Aceito em troca da qualidade.
 - **Martelo nos graves:** contato de ~1,5 ms em mf, abaixo dos 2 a 4 ms da
   literatura. Calibrar massa/feltro abaixo do C2 (hoje extrapolados).
 - **Ataque dos agudos:** dobrar o golpe numa volta removeu o estalo
@@ -447,19 +489,22 @@ feitas durante o desenvolvimento.
   dedilhado tocável mas não o pedagógico (4-3-2-1-3-2-1-3-2-1-4-3-2-1 em vez
   de 5-4-3-2-1-3-2-1-4-3-2-1-3-2-1). O modelo de Parncutt não tem, por
   exemplo, a preferência por começar uma escala longa com o dedo da ponta.
-- **Dedilhado escrito ignorado:** o `<fingering>` do MusicXML ainda não é
-  lido; o player sempre escolhe sozinho.
 - **Mãos só pela pauta:** não há divisão inteligente (ex.: uma voz da pauta
   de cima tocada pela esquerda), só o excesso de 5 notas muda de mão.
 - **Corpo simplificado:** o dedilhado considera só o momento anterior para
   saber se um dedo está ocupado; notas longas seguradas enquanto a mesma mão
   toca outras podem ser encurtadas. Não há limite de velocidade da mão em
   saltos grandes.
-- **Pé:** só executa as marcações; não decide o pedal sozinho. Sem una corda
+- **Pé automático simples:** reconhece acordes por modelo (sem tonalidade
+  nem condução de vozes), não faz meio pedal nem pedal de efeito, e em
+  passagens cromáticas ou muito rápidas tende a soltar cedo. Sem una corda
   e sostenuto vindos da partitura.
-- **MusicXML:** sem `.mxl`, `score-timewise`, repetições, ornamentos,
-  articulações (staccato, acento) e vozes; dinâmicas valem para a parte toda
-  (as duas pautas) e não há crescendo gradual (`wedge`).
+- **Interpretação:** a humanização é por regras fixas (adiantar a melodia,
+  acentos métricos, ritardando final); não há fraseado (respiração no fim
+  das frases), rubato nem dinâmica pela forma da melodia.
+- **MusicXML:** sem `score-timewise`, repetições e ornamentos; dinâmicas
+  valem para a parte toda (as duas pautas); o crescendo vai até a dinâmica
+  seguinte (sem ela, muda pouco).
 
 ### Interface (piano roll)
 
@@ -472,7 +517,7 @@ feitas durante o desenvolvimento.
   lembrados entre execuções.
 - **Abrir arquivo:** o diálogo bloqueia a interface enquanto está aberto
   (a reprodução é pausada antes); não há arrastar e soltar nem lista de
-  arquivos recentes; `.mxl` comprimido não abre.
+  arquivos recentes.
 - **Interação não testada automaticamente:** rolagem, zoom, cliques e a
   sincronia do playhead com o som foram conferidos só pelas capturas e por
   abrir a janela; o sentido da roda pode estar invertido em algum sistema.
@@ -500,6 +545,13 @@ feitas durante o desenvolvimento.
 - **Diagramação:** o Verovio às vezes sobrepõe textos (número do compasso e
   indicação de andamento no início do sistema); a divisória do modo
   expandido não é lembrada entre execuções.
+- **Alinhado ao tempo:** a clave e a armadura só aparecem no começo do
+  primeiro sistema visível (no meio da peça não há clave na tela); as barras
+  de compasso caem perto, mas não exatamente, sobre as do roll (só as notas
+  são âncoras); nas emendas entre sistemas as linhas da pauta podem dar um
+  pequeno degrau (a distância entre as pautas varia de sistema a sistema);
+  em passagens densas com pouco zoom o desenho é comprimido. Ligar o modo
+  diagrama a partitura de novo, com espaçamento mais proporcional à duração.
 - **Primeira compilação lenta** (o Verovio em C++, ~10 min) e a licença
   LGPL-3.0 do Verovio para quem distribuir binários (ver acima).
 

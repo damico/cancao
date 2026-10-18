@@ -285,9 +285,9 @@ pub fn teclas_visiveis(v: &Vista) -> Vec<TeclaDesenho> {
 }
 
 /// Trechos de pedal de sustain visíveis: (x, largura).
-pub fn pedais_visiveis(v: &Vista, p: &Partitura) -> Vec<(f64, f64)> {
+pub fn pedais_visiveis(v: &Vista, pedais: &[(f64, f64)]) -> Vec<(f64, f64)> {
     let (t0, t1) = v.tempos();
-    p.pedais
+    pedais
         .iter()
         .filter(|(a, s)| *a <= t1 && *s >= t0)
         .map(|&(a, s)| (v.x(a), ((s - a) * v.px_tempo - 2.0).max(1.0)))

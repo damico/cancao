@@ -26,7 +26,7 @@ use cancao::eventos::{Evento, EventoAgendado};
 use cancao::motor::Motor;
 use cancao::musicxml;
 use cancao::partitura;
-use cancao::player::Player;
+use cancao::player::{Pe, Player};
 use cancao::roteiro::{self, Roteiro};
 use cancao::synth::{BLOCO, MAX_VOZES, Modelo, Synth};
 use cancao::tampo::Tampo;
@@ -71,13 +71,19 @@ struct Opcoes {
     posicao: Option<f64>,
     /// modo do painel da partitura na captura
     modo_partitura: i32,
+    /// partitura alinhada ao tempo na captura
+    alinhada: bool,
     /// humanização do player (0 = exato)
     humanizar: f32,
+    /// como o pé pedala
+    pe: Pe,
     modelo: Modelo,
     wav: PathBuf,
     ir_entrada: Option<PathBuf>,
     ir_saida: Option<PathBuf>,
     sem_tampo: bool,
+    /// sem a ressonância simpática das cordas livres
+    sem_ressonancia: bool,
     notas: Vec<usize>,
     vel: f32,
     tensao: f64,
@@ -100,6 +106,8 @@ uso: piano [opções]
                         (escala, acordes, desafios), com mãos e dedos
   --musicxml arq.musicxml  o player toca um arquivo MusicXML (simplificado)
   --humanizar 0.5       variações humanas do player (0 = exato)
+  --pe auto             pedal: auto (marcações da partitura; sem elas, o pé
+                        decide), partitura, automatico ou nenhum
   --render saida.wav    grava num WAV em vez de tocar (padrão: as 88 teclas;
                         combina com --nota, --demo e --pedais)
   --bench               mede o tempo de síntese no pior caso (32 vozes)
@@ -110,9 +118,11 @@ uso: piano [opções]
   --gui-posicao 12.5    posição do playhead na captura, em semínimas
   --gui-partitura modo  painel da partitura na captura: oculta, compacta,
                         expandida ou cheia
+  --gui-alinhada        partitura alinhada ao tempo na captura
   --modelo modal|guia   simulação da corda: soma de senoides (modal) ou
                         guia de onda digital
   --sem-tampo           só o som das cordas
+  --sem-ressonancia     sem a ressonância simpática das cordas livres
   --tampo ir.wav        usa uma resposta ao impulso gravada
   --salvar-tampo x.wav  grava a resposta ao impulso usada
   --vel 0.7             força das notas (0..1)
@@ -131,12 +141,15 @@ fn ler_opcoes() -> Result<Opcoes, String> {
         captura: PathBuf::new(),
         posicao: None,
         modo_partitura: 1,
+        alinhada: false,
         humanizar: 0.5,
+        pe: Pe::Auto,
         modelo: Modelo::Modal,
         wav: PathBuf::new(),
         ir_entrada: None,
         ir_saida: None,
         sem_tampo: false,
+        sem_ressonancia: false,
         notas: Vec::new(),
         vel: 0.7,
         tensao: 1.0,
@@ -160,6 +173,15 @@ fn ler_opcoes() -> Result<Opcoes, String> {
                 op.roteiro = Some(QualRoteiro::Partitura);
                 op.musicxml = Some(valor()?.into());
             }
+            "--pe" => {
+                op.pe = match valor()?.as_str() {
+                    "auto" => Pe::Auto,
+                    "partitura" => Pe::Partitura,
+                    "automatico" => Pe::Automatico,
+                    "nenhum" => Pe::Nenhum,
+                    m => return Err(format!("--pe desconhecido: {m} (auto, partitura, automatico, nenhum)")),
+                }
+            }
             "--humanizar" => op.humanizar = valor()?.parse().map_err(|_| "--humanizar inválido")?,
             "--bench" => op.modo = Modo::Bench,
             "--listar" => op.modo = Modo::Listar,
@@ -177,6 +199,7 @@ fn ler_opcoes() -> Result<Opcoes, String> {
                     m => return Err(format!("modo da partitura desconhecido: {m}")),
                 }
             }
+            "--gui-alinhada" => op.alinhada = true,
             "--gui-posicao" => op.posicao = Some(valor()?.parse().map_err(|_| "--gui-posicao inválido")?),
             "--render" => {
                 render = true;
@@ -192,6 +215,7 @@ fn ler_opcoes() -> Result<Opcoes, String> {
                 }
             }
             "--sem-tampo" => op.sem_tampo = true,
+            "--sem-ressonancia" => op.sem_ressonancia = true,
             "--modelo" => {
                 op.modelo = match valor()?.as_str() {
                     "modal" => Modelo::Modal,
@@ -238,7 +262,7 @@ fn carregar_partitura(op: &Opcoes) -> Result<(partitura::Partitura, Option<Strin
         (op.partitura.is_empty() && matches!(op.modo, Modo::Gui | Modo::Captura)).then_some(padrao)
     });
     match arquivo {
-        Some(arquivo) => Ok((musicxml::ler(&arquivo)?, std::fs::read_to_string(&arquivo).ok())),
+        Some(arquivo) => Ok((musicxml::ler(&arquivo)?, musicxml::ler_texto(&arquivo).ok())),
         None => partitura::exemplo(&op.partitura).map(|p| (p, None)).ok_or_else(|| {
             format!("partitura desconhecida: {} (exemplos: {})", op.partitura, partitura::EXEMPLOS.join(", "))
         }),
@@ -248,8 +272,7 @@ fn carregar_partitura(op: &Opcoes) -> Result<(partitura::Partitura, Option<Strin
 /// O player toca a partitura; mostra o que ele precisou adaptar.
 fn tocar_partitura(op: &Opcoes) -> Result<Roteiro, String> {
     let (p, _) = carregar_partitura(op)?;
-    let player = Player { humanizacao: op.humanizar, ..Player::default() };
-    let e = player.tocar(&p, TAXA);
+    let e = player_de(op).tocar(&p, TAXA);
     println!("{}  (humanização {})", p.titulo, op.humanizar);
     for a in &e.avisos {
         println!("  aviso: {a}");
@@ -257,12 +280,15 @@ fn tocar_partitura(op: &Opcoes) -> Result<Roteiro, String> {
     Ok(e.roteiro)
 }
 
+fn player_de(op: &Opcoes) -> Player {
+    Player { humanizacao: op.humanizar, pe: op.pe, ..Player::default() }
+}
+
 /// Partitura e a execução do player, para a interface.
 #[cfg(feature = "gui")]
 fn peca(op: &Opcoes) -> Result<cancao::gui::Peca, String> {
     let (partitura, fonte) = carregar_partitura(op)?;
-    let player = Player { humanizacao: op.humanizar, ..Player::default() };
-    let execucao = player.tocar(&partitura, TAXA);
+    let execucao = player_de(op).tocar(&partitura, TAXA);
     Ok(cancao::gui::Peca { partitura, execucao, fonte })
 }
 
@@ -307,7 +333,10 @@ fn fazer_tampo(op: &Opcoes) -> Result<Option<Tampo>, String> {
 }
 
 fn fazer_motor(op: &Opcoes) -> Result<Motor, String> {
-    let synth = Synth::new(TAXA as f32, op.tensao, fazer_tampo(op)?).com_modelo(op.modelo);
+    let mut synth = Synth::new(TAXA as f32, op.tensao, fazer_tampo(op)?).com_modelo(op.modelo);
+    if op.sem_ressonancia {
+        synth = synth.sem_ressonancia();
+    }
     Ok(Motor::new(synth, TAXA as f32))
 }
 
@@ -367,7 +396,15 @@ fn render_wav(op: &Opcoes) -> Result<(), String> {
 }
 
 fn bench_um(rotulo: &str, synth: Synth, notas: bool) {
+    bench_com_pedal(rotulo, synth, notas, false);
+}
+
+/// `sustain`: pedal abaixado, todas as cordas livres ressoando.
+fn bench_com_pedal(rotulo: &str, synth: Synth, notas: bool, sustain: bool) {
     let mut m = Motor::new(synth, TAXA as f32);
+    if sustain {
+        m.agendar(EventoAgendado::agora(Evento::Pedal { pedal: cancao::eventos::Pedal::Sustain, valor: 1.0 }));
+    }
     // 32 notas na região mais cara (3 cordas, muitos parciais): G2..D5
     if notas {
         let g2 = corda::tecla_de_nome("G2").unwrap();
@@ -406,6 +443,8 @@ fn benchmark(op: &Opcoes) -> Result<(), String> {
         let synth = Synth::new(taxa, op.tensao, fazer_tampo(&op_com_tampo)?).com_modelo(modelo);
         bench_um(&format!("{nome}: cordas + tampo"), synth, true);
     }
+    let synth = Synth::new(taxa, op.tensao, fazer_tampo(&op_com_tampo)?).com_modelo(Modelo::Guia);
+    bench_com_pedal("guia + tampo + sustain", synth, true, true);
     bench_um("só tampo (silêncio)", Synth::new(taxa, op.tensao, fazer_tampo(&op_com_tampo)?), false);
     println!("regra: até ~50% do prazo no pico, uma thread de áudio basta.");
     Ok(())
@@ -420,13 +459,16 @@ fn clonar(op: &Opcoes) -> Opcoes {
         captura: op.captura.clone(),
         posicao: op.posicao,
         modo_partitura: op.modo_partitura,
+        alinhada: op.alinhada,
         humanizar: op.humanizar,
+        pe: op.pe,
         modelo: op.modelo,
         segurar_s: op.segurar_s,
         wav: op.wav.clone(),
         ir_entrada: op.ir_entrada.clone(),
         ir_saida: None,
         sem_tampo: op.sem_tampo,
+        sem_ressonancia: op.sem_ressonancia,
         notas: op.notas.clone(),
         vel: op.vel,
         tensao: op.tensao,
@@ -463,12 +505,12 @@ fn main() -> ExitCode {
         Modo::Render => render_wav(&op),
         Modo::Bench => benchmark(&op),
         #[cfg(feature = "gui")]
-        Modo::Captura => peca(&op).and_then(|p| cancao::gui::capturar(p, &op.captura, op.posicao, op.modo_partitura, 1400, 860)),
+        Modo::Captura => peca(&op).and_then(|p| cancao::gui::capturar(p, player_de(&op), &op.captura, op.posicao, op.modo_partitura, op.alinhada, 1400, 860)),
         #[cfg(feature = "gui")]
         Modo::Gui => peca(&op).and_then(|p| {
             let op_motor = clonar(&op);
             let fabrica: cancao::gui::FabricaMotor = Box::new(move || fazer_motor(&op_motor));
-            cancao::gui::rodar(p, fabrica, op.modelo == Modelo::Guia, TAXA, &op.dispositivo, op.latencia_us, op.humanizar)
+            cancao::gui::rodar(p, fabrica, op.modelo == Modelo::Guia, TAXA, &op.dispositivo, op.latencia_us, player_de(&op))
         }),
         #[cfg(not(feature = "gui"))]
         Modo::Gui | Modo::Captura => Err("compilado sem interface (feature \"gui\")".into()),

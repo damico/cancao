@@ -23,13 +23,24 @@
 use crate::corda::tecla_de_nome;
 
 /// Pauta do sistema de piano: a de cima (normalmente mão direita) e a de baixo.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Pauta {
+    #[default]
     Superior,
     Inferior,
 }
 
-#[derive(Debug, Clone, PartialEq)]
+/// Articulações escritas sobre a nota.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct Articulacao {
+    pub staccato: bool,
+    pub staccatissimo: bool,
+    pub acento: bool,
+    pub tenuto: bool,
+    pub fermata: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Default)]
 pub struct Nota {
     /// início, em semínimas desde o começo da peça
     pub inicio: f64,
@@ -43,6 +54,9 @@ pub struct Nota {
     /// voz musical (contraponto); no MusicXML de piano, 1 a 4 na pauta de
     /// cima e 5 a 8 na de baixo
     pub voz: u8,
+    pub articulacao: Articulacao,
+    /// dedo escrito na partitura (1 = polegar ... 5 = mínimo)
+    pub dedo: Option<u8>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -160,7 +174,7 @@ fn tecla(nome: &str) -> u8 {
 
 fn nota(inicio: f64, duracao: f64, nome: &str, pauta: Pauta, dinamica: f32) -> Nota {
     let voz = if pauta == Pauta::Superior { 1 } else { 5 };
-    Nota { inicio, duracao, tecla: tecla(nome), pauta, dinamica, voz }
+    Nota { inicio, duracao, tecla: tecla(nome), pauta, dinamica, voz, ..Nota::default() }
 }
 
 /// Escala de Dó maior em duas oitavas, mãos paralelas, subindo e descendo.

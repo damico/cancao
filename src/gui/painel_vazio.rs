@@ -31,8 +31,8 @@ impl Painel {
     pub fn nota_da_marca(&self, _id: usize) -> Option<(Option<usize>, f64)> {
         None
     }
-    pub fn atualizar(&mut self, ui: &PianoRoll, _agora: Option<f64>, _tocando: bool, _selecionada: Option<usize>) {
+    pub fn atualizar(&mut self, ui: &PianoRoll, _vista: &super::linha_do_tempo::Vista, _agora: Option<f64>, _tocando: bool, _selecionada: Option<usize>) {
         ui.set_status_partitura("Compilado sem a feature \"partitura\" (Verovio).".into());
     }
-    pub fn diagramar_agora(&mut self, _largura: u32) {}
+    pub fn diagramar_agora(&mut self, _largura: u32, _proporcional: bool) {}
 }

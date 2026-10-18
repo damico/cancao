@@ -101,7 +101,7 @@ fn atraso_perdas(a: f32, w: f32) -> f32 {
 /// Afinação da volta: com o atraso dos filtros de perdas e de dispersão na
 /// fundamental, devolve a parte inteira da linha e o coeficiente η do
 /// passa-tudo fracionário que completa exatamente `taxa / f`.
-fn sintonia(f: f32, a_perdas: f32, disp: Dispersao, taxa: f32) -> (usize, f32) {
+pub(crate) fn sintonia(f: f32, a_perdas: f32, disp: Dispersao, taxa: f32) -> (usize, f32) {
     let w0 = 2.0 * PI * f / taxa;
     let filtros = atraso_perdas(a_perdas, w0) + disp.m as f32 * atraso_passa_tudo(disp.a, w0);
     let resto = taxa / f - filtros;
@@ -127,7 +127,7 @@ const TOLERANCIA_CENTS: f32 = 1.5;
 /// uma corda só não têm o par em oposição (o pós-som delas vem das duas
 /// polarizações da corda, ainda não modeladas) e ficam com um decaimento
 /// único, entre os dois estágios do modal.
-fn tau_corda(c: &Corda) -> f32 {
+pub(crate) fn tau_corda(c: &Corda) -> f32 {
     let f = c.parcial(1) as f32;
     if c.n_cordas > 1 { 6.0 * tau_base(f) } else { 2.5 * tau_base(f) }
 }
@@ -231,7 +231,7 @@ type Faixas = [f32; FAIXAS];
 /// Filtro de perdas H(z) = g*(1+a) / (1 + a*z⁻¹) tal que, por volta na corda,
 /// a fundamental decai com `tau0` e uma frequência 3 kHz acima dela decai
 /// duas vezes mais rápido (como no modelo modal). Devolve (a, g).
-fn ajustar_perdas(f: f32, tau0: f32, taxa: f32) -> (f32, f32) {
+pub(crate) fn ajustar_perdas(f: f32, tau0: f32, taxa: f32) -> (f32, f32) {
     let w0 = 2.0 * PI * f / taxa;
     let w1 = (2.0 * PI * (f + 3000.0) / taxa).min(0.95 * PI);
     // ganho por volta (uma volta dura 1/f segundos)

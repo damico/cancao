@@ -206,8 +206,10 @@ mod testes {
 
     const TAXA: f32 = 48000.0;
 
+    /// sem ressonância simpática: os testes de abafador medem o mecanismo
+    /// do abafador (com ela, as cordas agudas sem abafador deixam um halo)
     fn motor() -> Motor {
-        Motor::new(Synth::new(TAXA, 1.0, None), TAXA)
+        Motor::new(Synth::new(TAXA, 1.0, None).sem_ressonancia(), TAXA)
     }
 
     fn tocar(m: &mut Motor, segundos: f32) -> Vec<f32> {
@@ -491,6 +493,38 @@ mod testes {
         let (normal, una) = (tocar_acorde(0.0), tocar_acorde(1.0));
         let db = 20.0 * (rms(&una, 0.0, 0.5) / rms(&normal, 0.0, 0.5)).log10();
         assert!((-8.0..-1.0).contains(&db), "una corda {db:.1} dB");
+    }
+
+    /// acorde solto em 0,1 s, com o sustain numa posição; RMS da cauda
+    fn cauda(sustain: f32, ressonancia: bool) -> f32 {
+        let mut synth = Synth::new(TAXA, 1.0, None).com_modelo(Modelo::Guia);
+        if !ressonancia {
+            synth = synth.sem_ressonancia();
+        }
+        let mut m = Motor::new(synth, TAXA);
+        pedal(&mut m, 0.0, Pedal::Sustain, sustain);
+        for k in [27, 31, 34, 39] {
+            on(&mut m, 0.0, k);
+            off(&mut m, 0.1, k);
+        }
+        rms(&tocar(&mut m, 3.0), 2.5, 3.0)
+    }
+
+    #[test]
+    fn ressonancia_enriquece_a_cauda_com_sustain() {
+        let (sem, com) = (cauda(1.0, false), cauda(1.0, true));
+        let db = 20.0 * (com / sem).log10();
+        // halo discreto: soma, mas não domina o som da nota
+        assert!((0.3..4.0).contains(&db), "ressonância somou {db:.1} dB");
+    }
+
+    #[test]
+    fn cordas_sem_abafador_deixam_um_halo() {
+        // sem pedal o acorde é abafado; as cordas do F#6 para cima, que não
+        // têm abafador, continuam vibrando de leve pelo cavalete
+        assert_eq!(cauda(0.0, false), 0.0);
+        let halo = cauda(0.0, true);
+        assert!(halo > 0.0 && halo < 1e-2, "halo {halo}");
     }
 
     #[test]
