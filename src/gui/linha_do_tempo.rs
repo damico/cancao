@@ -25,7 +25,9 @@
 use crate::corda::{self, NUM_TECLAS};
 use crate::dedilhado::{self, Mao};
 use crate::partitura::Partitura;
+use crate::emocao::{Ponto, Resumo};
 use crate::eventos::Pedal;
+use crate::expressao::Perfil;
 use crate::player::{NotaTocada, Pisada, RelogioExecucao};
 
 pub const ZOOM_PADRAO: f64 = 60.0; // px por semínima = 100%
@@ -285,6 +287,64 @@ pub fn teclas_visiveis(v: &Vista) -> Vec<TeclaDesenho> {
         .collect()
 }
 
+/// Uma interpretação medida, para comparar com as outras.
+pub struct Comparada {
+    pub perfil: Perfil,
+    /// emoção percebida estimada, um ponto por segundo da execução
+    pub trajetoria: Vec<Ponto>,
+    /// posição na partitura (semínimas) de cada ponto
+    pub tempos: Vec<f64>,
+    pub resumo: Resumo,
+}
+
+/// Uma dimensão da trajetória como caminho SVG na faixa de emoção, em
+/// pixels: x pela posição na partitura (alinhada com o roll), y de cima
+/// (1) para baixo (-1).
+pub fn curva_no_tempo(v: &Vista, c: &Comparada, valor: fn(&Ponto) -> f32, altura: f64) -> String {
+    let mut s = String::new();
+    for (p, &t) in c.trajetoria.iter().zip(&c.tempos) {
+        let x = v.x(t);
+        if x < -100.0 || x > v.largura + 100.0 {
+            continue;
+        }
+        let y = (1.0 - valor(p) as f64) / 2.0 * altura;
+        s += &format!("{}{x:.1} {y:.1} ", if s.is_empty() { "M " } else { "L " });
+    }
+    s
+}
+
+/// A trajetória no plano Valência x Ativação, em coordenadas 0..200.
+pub fn curva_no_plano(c: &Comparada) -> String {
+    let mut s = String::new();
+    for p in &c.trajetoria {
+        let x = (p.valencia as f64 + 1.0) * 100.0;
+        let y = (1.0 - p.ativacao as f64) * 100.0;
+        s += &format!("{}{x:.1} {y:.1} ", if s.is_empty() { "M " } else { "L " });
+    }
+    s
+}
+
+/// O que distingue a interpretação `c` da neutra `n`, em poucas linhas.
+pub fn descrever_comparada(c: &Comparada, n: &Comparada) -> String {
+    let (r, q) = (&c.resumo, &n.resumo);
+    let mut s = format!(
+        "Andamento {:.0}%, força {:.2}\nArticulação {:.0}%, agógica {:.1}%\nSustain {:.0}%, una corda {:.0}%\nValência {:+.2}, ativação {:+.2}",
+        100.0 * r.andamento,
+        r.forca,
+        100.0 * r.articulacao,
+        100.0 * r.agogica,
+        100.0 * r.sustain,
+        100.0 * r.una_corda,
+        r.valencia,
+        r.ativacao
+    );
+    if c.perfil != n.perfil {
+        s += &format!("\nNeutra: {:+.2} e {:+.2}", q.valencia, q.ativacao);
+    }
+    // vírgula decimal só nos números; o aviso vai depois
+    s.replace('.', ",") + "\nEmoção estimada por regras; perfis experimentais."
+}
+
 /// Uma pisada visível na faixa do seu pedal.
 pub struct PisadaDesenho {
     /// índice em `Execucao::pedais`
@@ -416,6 +476,28 @@ mod testes {
 
     fn vista() -> Vista {
         Vista { inicio: 0.0, px_tempo: 50.0, topo: 0.0, px_tecla: 10.0, largura: 500.0, altura: 300.0 }
+    }
+
+    #[test]
+    fn curvas_da_emocao_e_resumo() {
+        use crate::emocao::Ponto;
+        let ponto = |s, valencia, ativacao| Ponto { s, valencia, ativacao };
+        let c = Comparada {
+            perfil: Perfil::Energica,
+            trajetoria: vec![ponto(0.0, -1.0, 1.0), ponto(1.0, 1.0, -1.0), ponto(99.0, 0.0, 0.0)],
+            tempos: vec![0.0, 2.0, 1000.0],
+            resumo: Resumo { andamento: 1.14, valencia: 0.2, ativacao: 0.5, ..Resumo::default() },
+        };
+        // plano 0..200: valência para a direita, ativação para cima
+        assert_eq!(curva_no_plano(&c), "M 0.0 0.0 L 200.0 200.0 L 100.0 100.0 ");
+        // faixa: x pela posição na partitura; o ponto fora da tela fica de fora
+        assert_eq!(curva_no_tempo(&vista(), &c, |u| u.valencia, 40.0), "M 0.0 40.0 L 100.0 0.0 ");
+        let n = Comparada { perfil: Perfil::Neutra, trajetoria: vec![], tempos: vec![], resumo: Resumo::default() };
+        let texto = descrever_comparada(&c, &n);
+        assert!(texto.starts_with("Andamento 114%"), "{texto}");
+        assert!(texto.contains("Valência +0,20, ativação +0,50"), "{texto}");
+        assert!(texto.contains("Neutra: +0,00 e +0,00"), "{texto}");
+        assert!(texto.ends_with("perfis experimentais."), "{texto}");
     }
 
     #[test]

@@ -34,21 +34,52 @@ pub struct Saida {
 }
 
 pub fn listar() -> Vec<String> {
-    let host = cpal::default_host();
-    host.output_devices()
-        .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
-        .unwrap_or_default()
+    sem_avisos_do_alsa(|| {
+        let host = cpal::default_host();
+        host.output_devices()
+            .map(|ds| ds.filter_map(|d| d.name().ok()).collect())
+            .unwrap_or_default()
+    })
 }
 
 fn escolher(nome: &str) -> Result<cpal::Device, String> {
-    let host = cpal::default_host();
-    if nome == "default" {
-        return host.default_output_device().ok_or("sem dispositivo de saída padrão".into());
+    sem_avisos_do_alsa(|| {
+        let host = cpal::default_host();
+        if nome == "default" {
+            return host.default_output_device().ok_or("sem dispositivo de saída padrão".into());
+        }
+        host.output_devices()
+            .map_err(|e| e.to_string())?
+            .find(|d| d.name().is_ok_and(|n| n == nome))
+            .ok_or_else(|| format!("dispositivo '{nome}' não encontrado (veja --listar)"))
+    })
+}
+
+/// Roda `f` com a saída de erro descartada. Para listar os dispositivos, o
+/// ALSA testa cada um da configuração, e os que só servem a um sentido
+/// (dmix só toca, dsnoop só grava) reclamam direto no terminal, sem efeito
+/// no som. Os avisos durante a execução (underrun) continuam aparecendo.
+fn sem_avisos_do_alsa<T>(f: impl FnOnce() -> T) -> T {
+    #[cfg(target_os = "linux")]
+    {
+        // SAFETY: só duplica e restaura o descritor 2 do próprio processo
+        let guardado = unsafe { libc::dup(2) };
+        let nulo = std::fs::OpenOptions::new().write(true).open("/dev/null");
+        if let (true, Ok(nulo)) = (guardado >= 0, nulo) {
+            use std::os::fd::AsRawFd;
+            unsafe { libc::dup2(nulo.as_raw_fd(), 2) };
+            let r = f();
+            unsafe {
+                libc::dup2(guardado, 2);
+                libc::close(guardado);
+            }
+            return r;
+        }
+        if guardado >= 0 {
+            unsafe { libc::close(guardado) };
+        }
     }
-    host.output_devices()
-        .map_err(|e| e.to_string())?
-        .find(|d| d.name().is_ok_and(|n| n == nome))
-        .ok_or_else(|| format!("dispositivo '{nome}' não encontrado (veja --listar)"))
+    f()
 }
 
 /// Prioridade de tempo real para a thread do driver: o escalonador não a

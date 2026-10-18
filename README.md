@@ -66,7 +66,7 @@ Dó grave enquanto a direita toca staccato):
 
 ## Interface: piano roll
 
-![Piano roll com a partitura compacta: notas que soam em dourado nas duas vistas, dedo de cada nota, inspetor, luzes dos pedais, velocity e as faixas dos três pedais](docs/piano-roll.png)
+![Piano roll com a partitura compacta: notas que soam em dourado nas duas vistas, dedo de cada nota, aba Interpretação, luzes dos pedais, velocity e as faixas dos pedais e da emoção percebida](docs/piano-roll.png)
 
     ./target/release/piano --gui                               # abre exemplos/ode.musicxml
     ./target/release/piano --gui --musicxml arq.musicxml       # qualquer MusicXML
@@ -75,7 +75,7 @@ Dó grave enquanto a direita toca staccato):
 Visualizador temporal da partitura tocada pelo player, inspirado no piano
 roll de DAWs, em [Slint](https://slint.dev):
 
-- barra superior: abrir, tocar, pausar, parar, andamento, posição (compasso e
+- barra superior: abrir, acervo, tocar, pausar, parar, andamento, posição (compasso e
   tempo), fórmula de compasso, zoom, grade, luzes dos três pedais, legenda
   de cores, cores por voz ou por mão, modelo de corda;
 - régua de compassos (clique para ir para aquele ponto);
@@ -83,9 +83,13 @@ roll de DAWs, em [Slint](https://slint.dev):
 - roll: cada nota com a cor da voz (ou da mão) e o dedo escolhido pelo
   player; as já tocadas ficam apagadas, as que soam brilham; playhead
   dourado;
-- inspetor: nota, frequência, compasso, duração, voz, mão, dedo, velocity;
-- áudio: escolha da saída (placa de som) e volume de 0 a 150%;
-- faixas de velocity (força tocada pelo player) e dos três pedais.
+- coluna da direita em abas: **Interpretação** (os quatro perfis do
+  [motor de expressão](#motor-de-expressão-e-emoção-percebida) e o plano
+  Valência x Ativação), **Nota** (inspetor: nota, frequência, compasso,
+  duração, voz, mão, dedo, velocity; abre sozinha ao clicar numa nota ou
+  num pedal) e **Áudio** (saída e volume de 0 a 150%);
+- faixas de velocity (força tocada pelo player), dos três pedais e da
+  emoção percebida (valência e ativação estimadas, alinhadas com o roll).
 
 **O pé, ao vivo e no tempo.** As luzes **Sustain**, **Sostenuto** e **Una
 corda** na barra superior acendem enquanto o pedal está abaixado e enchem
@@ -111,6 +115,7 @@ duração, profundidade, se veio da partitura ou do pé e o efeito no piano.
 | clique na régua       | ir para o ponto (tocando ou não)       |
 | clique numa nota      | detalhes no inspetor                   |
 | clique num pedal      | qual pedal, como e quando, no inspetor |
+| Interpretação         | trocar o perfil (continua do mesmo ponto da partitura) |
 | botão Abrir           | escolher um `.musicxml`/`.xml`/`.mxl` e tocar |
 | Áudio, Saída          | trocar a placa de som (pausa; Tocar continua dali) |
 | Áudio, Volume         | volume geral, na hora                  |
@@ -185,6 +190,51 @@ documentação e testes (as imagens deste README foram geradas assim, com
     ./target/release/piano --gui-captura roll.png --gui-partitura expandida   # oculta, compacta, expandida, cheia
     ./target/release/piano --gui-captura roll.png --gui-alinhada              # partitura alinhada ao tempo
 
+## Acervo de partituras
+
+Uma pasta com milhares de partituras vira um catálogo pesquisável. Foi
+pensado para coleções como o [PDMX](https://zenodo.org/records/15571083)
+(mais de 250 mil MusicXML do MuseScore), onde as pastas são numéricas e os
+nomes de arquivo são só códigos (`Qmf5fZZe...mxl`).
+
+    ./target/release/piano --gui                       # botão Acervo na barra
+    ./target/release/piano --acervo ~/Documents/mxl    # guarda a pasta e indexa
+    ./target/release/piano --buscar "chopin nocturne"  # a mesma busca no terminal
+
+Na interface, o botão **Acervo** abre a tela de busca por cima do piano roll
+(o som continua):
+
+- **Pasta:** na primeira vez a tela pede a pasta (em qualquer nível de
+  subpastas: `.mxl`, `.musicxml` ou `.xml`). Ela fica guardada em
+  `~/.config/cancao/cancao.conf` e pode ser trocada pelo botão **Trocar pasta**.
+- **Índice:** o cancao lê só o cabeçalho de cada arquivo (título,
+  compositor, nomes das partes, pautas) com uma barra de andamento. Usa
+  metade dos núcleos com prioridade mínima, para não roubar processador da
+  síntese (o resultado é o mesmo, só leva mais tempo). São cerca de 12 s
+  para 254 mil arquivos num processador de 12 núcleos. O índice fica em
+  `~/.cache/cancao/` e abre em menos de meio segundo nas vezes seguintes;
+  **Atualizar índice** relê a pasta quando ela muda.
+- **Busca a cada tecla:** sem diferenciar maiúsculas nem acentos, por
+  palavras em qualquer ordem (`nocturne chopin`, `bwv 846`, `villa-lobos`,
+  `dvorak`). Cada palavra precisa aparecer no título, no compositor ou nos
+  instrumentos. Vêm primeiro o compositor exato, depois o título e as
+  partituras para piano.
+- **Compositores:** botões com quantas obras de cada compositor conhecido
+  há no acervo; um clique faz a busca.
+- **Só piano:** mostra só as partituras em que todas as partes são de
+  teclado, ou que têm uma parte com duas pautas.
+- **Sem busca:** as abertas por último ou, na primeira vez, obras para
+  piano dos compositores sugeridos, alternando entre eles.
+- **Teclado:** setas e PageUp/PageDown escolhem; Enter ou duplo clique toca
+  no piano; Esc volta. O painel da direita mostra os instrumentos, a
+  formação e o arquivo, com **Tocar no piano** e **Abrir sem tocar**.
+
+Os dados do acervo são de quem subiu cada arquivo: há títulos e
+compositores vazios ou escritos de vários jeitos (`J. S. Bach`, `J.S.Bach`,
+`Johann Sebastian Bach`). A busca por palavras cobre a maior parte
+desses casos. As partituras de coleções de terceiros têm a licença de cada
+arquivo e não fazem parte deste repositório.
+
 ## Usar
 
     ./target/release/piano                  # modo interativo
@@ -198,6 +248,10 @@ documentação e testes (as imagens deste README foram geradas assim, com
     ./target/release/piano --partitura escala        # partituras embutidas: escala, acordes, desafios
     ./target/release/piano --humanizar 0.5           # variações humanas do player (0 = exato)
     ./target/release/piano --pe automatico           # o pé decide o pedal (auto, partitura, automatico, nenhum)
+    ./target/release/piano --interpretacao melancolica  # neutra, contemplativa, energica, melancolica
+    ./target/release/piano --comparar --musicxml arq.musicxml  # as quatro interpretações medidas
+    ./target/release/piano --acervo ~/Documents/mxl  # pasta do acervo de partituras (fica guardada)
+    ./target/release/piano --buscar "satie gymnopedie"  # procura no acervo
     ./target/release/piano --bench          # tempo de síntese, pior caso
     ./target/release/piano --listar         # dispositivos de saída
     ./target/release/piano --modelo guia    # corda em guia de onda (padrão: modal)
@@ -329,17 +383,20 @@ entre os dois só passam eventos.
 3. **Corpo:** acorde que não cabe na mão é arpejado (com aviso); um dedo só
    abaixa outra tecla depois de soltar a anterior; uma tecla só é tocada de
    novo depois de solta.
-4. **Tempo e força:** semínimas viram segundos pelo andamento; a
-   humanização (`--humanizar`, 0 = exato e repetível) varia levemente tempo e
-   força, destaca a nota mais aguda da mão direita (a melodia) e a adianta
-   alguns ms do acompanhamento (como fazem os pianistas), acentua os tempos
-   fortes do compasso e alarga o andamento nos dois últimos compassos
-   (ritardando final). A interface usa o mesmo relógio, então o playhead
-   acompanha o ritardando.
+4. **Tempo e força:** vêm do [motor de expressão](#motor-de-expressão-e-emoção-percebida),
+   pela interpretação escolhida (`--interpretacao`). A neutra, padrão,
+   destaca a nota mais aguda da mão direita (a melodia) e a adianta alguns
+   ms do acompanhamento (como fazem os pianistas), acentua os tempos fortes
+   do compasso e alarga o andamento nos dois últimos compassos (ritardando
+   final), tudo na medida da humanização (`--humanizar`, 0 = exato e
+   repetível), que também soma pequenas variações aleatórias de tempo e
+   força. A interface usa o mesmo relógio, então o playhead acompanha a
+   agógica.
 5. **Articulações:** staccatissimo segura 25% da nota, staccato 45%, tenuto
-   a nota inteira e o resto em legato; acento soma força; fermata alonga a
-   nota. O dedilhado escrito na partitura é seguido (contrariá-lo custa
-   caro no modelo de Parncutt, mas um dedo impossível ainda é trocado).
+   a nota inteira e o resto no legato da interpretação; acento soma força;
+   fermata alonga a nota. O dedilhado escrito na partitura é seguido
+   (contrariá-lo custa caro no modelo de Parncutt, mas um dedo impossível
+   ainda é trocado).
 6. **Pé** (`--pe`), nos três pedais: `partitura` executa as marcações
    (sustain e sostenuto abaixam 60 ms depois do tempo, pedal sincopado;
    o una corda desce 40 ms antes das notas, porque a mecânica precisa
@@ -352,7 +409,130 @@ entre os dois só passam eventos.
    harmonia muda ou o baixo muda num tempo forte; solta no silêncio. O
    sostenuto só vem da partitura. `auto` (padrão) usa, em cada pedal, as
    marcações quando a partitura as tem e decide sozinho quando não;
-   `nenhum` não pedala.
+   `nenhum` não pedala. A interpretação ajusta o pé: profundidade do
+   sustain, pedal curto e até que dinâmica usar o una corda.
+
+## Motor de expressão e emoção percebida
+
+![Interpretação melancólica da Ode à Alegria: plano Valência x Ativação com as trajetórias das quatro interpretações e o ponto de agora, resumo da execução e a faixa de emoção alinhada com o roll](docs/interpretacoes.png)
+
+O motor de expressão (`src/expressao.rs`, *Expressive Performance Engine*)
+transforma a mesma partitura em interpretações diferentes, decidindo
+tempo, dinâmica, articulação, fraseado e pedal; o player continua cuidando
+de mãos, dedos e corpo:
+
+    MusicXML -> Partitura -> motor de expressão -> Player -> instrumento (modelo físico)
+                               (perfil)          (mãos, dedos, corpo)
+
+A saída, por nota escrita, é o "codec de execução" de Ching e Widmer
+(2026): andamento local (o relógio da execução), força, desvio de tempo e
+articulação (fração da duração escrita). As frases são grupos de quatro
+compassos (cortados também nas fermatas): dentro de cada uma o andamento
+segue uma parábola, mais lento nas pontas e mais rápido no meio (Repp,
+1992), a força cresce até o meio e volta, e o último tempo respira.
+
+Os perfis são **experimentais**: seguem a direção das tendências descritas
+na literatura, não são traduções determinísticas de emoções em
+parâmetros.
+
+| | Neutra | Contemplativa | Enérgica | Melancólica |
+|---|---|---|---|---|
+| andamento | o escrito | 88% | 115% | 80% |
+| dinâmica | a escrita | -0,15 | +0,12 | -0,12 |
+| arco de dinâmica na frase | nenhum | 0,08 | 0,06 | 0,12 |
+| articulação (sem marca escrita) | 95% | 98% | 70% (arejada) | 100% (legato) |
+| ritmo pontuado (longo-curto) | escrito | suavizado | marcado | suavizado |
+| agógica na frase (parábola) | nenhuma | 0,06 | 0,02 | 0,10 |
+| respiração no último tempo da frase | nenhuma | 12% | 3% | 20% |
+| ritardando final | 35% x humanização | 45% | 8% | 60% |
+| acentos do compasso | x humanização | x 0,5 | x 1,6 | x 0,5 |
+| melodia adiantada | 12 ms x humanização | 15 ms | 8 ms | 25 ms |
+| sustain | no fundo | no fundo | meio pedal (60%) e curto | no fundo |
+| una corda automático | até pp | até p | nunca | até pp |
+
+De onde vêm as direções:
+
+- **Gabrielsson e Juslin (1996)**, perfis de pistas por emoção: tristeza
+  com andamento lento, desvios de tempo relativamente grandes, intensidade
+  baixa a moderada, contrastes longo-curto suavizados, legato e ataques
+  lentos; ternura parecida, mais suave e com timbre macio (aqui, o una
+  corda); alegria rápida, moderada a forte, contrastes acentuados,
+  articulação arejada e ataques rápidos, sem ritardando final marcado.
+- **Higuchi et al. (2011)**: tocando com a atenção na tristeza, pianistas
+  fizeram mais agógica, mais legato e mais variação de dinâmica
+  (fraseado), com menos clareza de pulso e cerca de 5 dB a menos de
+  intensidade média do que tocando atentos a cada nota.
+- **Sloboda e Lehmann (2001)**: no Prelúdio em mi menor de Chopin, o que
+  muda a emocionalidade percebida são desvios locais da execução média (a
+  nota final da frase cerca de 20% mais longa, subito piano, melodia mais
+  adiantada), concentrados no início e no fim das frases de quatro
+  compassos; exageros soam grotescos.
+- **Repp (1992)**: ritardandos nas fronteiras de frase e seção, com forma
+  parabólica.
+
+**Emoção percebida** (`src/emocao.rs`). A partir da execução (não do nome
+do perfil), uma janela de 5 s com passo de 1 s (como em Chowdhury e Widmer,
+2023) mede ataques por segundo (um acorde conta uma vez), força média,
+articulação, agógica, una corda, modo (perfis de Krumhansl e Kessler) e
+registro, e estima as duas dimensões do circumplexo de Russell, de -1 a 1:
+
+- **ativação**: sobe com a densidade de ataques e a força (os maiores
+  preditores em Chowdhury e Widmer, 2021 e 2023) e com a articulação
+  destacada;
+- **valência**: dominada pelo modo maior ou menor (Chowdhury e Widmer, 2021;
+  Ching e Widmer, 2026: a execução muda pouco a valência), com pesos menores
+  para registro, densidade e articulação; maior agógica puxa para baixo
+  (tristeza) e o una corda para cima (ternura), que são o que separa as
+  duas em Gabrielsson e Juslin.
+
+É uma estimativa por regras com pesos escolhidos à mão, não um modelo
+treinado nem medição com ouvintes. Serve para comparar interpretações de
+uma mesma partitura e ver o que as distingue.
+
+Na interface, a aba **Interpretação** troca o perfil sem parar a música (a
+execução continua do mesmo ponto da partitura) e mostra o plano Valência x
+Ativação com as trajetórias das quatro interpretações (a escolhida em
+destaque, com o ponto **Agora**), e o resumo medido da execução comparado
+com a neutra. A faixa **Valência/Ativação**, embaixo, mostra as duas curvas
+da interpretação escolhida alinhadas com o roll, com as da neutra apagadas
+por trás. Na linha de comando:
+
+    ./target/release/piano --comparar
+
+    Ode à Alegria (tema): as quatro interpretações
+    interpretação   duração andamento  força  faixa articulação  agógica  sustain  una corda  valência  ativação
+    Neutra           21.6 s       99%   0.57   0.35         95%     2.2%      98%         0%     +0.06     -0.36
+    Contemplativa    25.2 s       86%   0.41   0.37         98%     7.0%      98%        22%     +0.01     -0.63
+    Enérgica         18.2 s      114%   0.72   0.38         70%     1.8%     100%         0%     +0.18     +0.10
+    Melancólica      28.2 s       77%   0.44   0.39        100%     9.6%      98%         0%     -0.09     -0.63
+
+Como a literatura prevê, as interpretações se separam bem mais na ativação
+que na valência, e a contemplativa e a melancólica ficam próximas na
+ativação, separadas pela agógica e pelo una corda.
+
+Referências:
+
+- Chowdhury, S.; Widmer, G. (2021). On Perceived Emotion in Expressive
+  Piano Performance: Further Experimental Evidence for the Relevance of
+  Mid-level Perceptual Features. ISMIR 2021.
+- Chowdhury, S.; Widmer, G. (2023). Decoding and Visualising Intended
+  Emotion in an Expressive Piano Performance. ISMIR 2022, Late-Breaking
+  Demo.
+- Ching, J.; Widmer, G. (2026). Learning to Predict Performance-induced
+  Emotion Differences in Classical Piano Music. ISMIR 2026.
+- Gabrielsson, A.; Juslin, P. N. (1996). Emotional Expression in Music
+  Performance: Between the Performer's Intention and the Listener's
+  Experience. Psychology of Music, 24, 68-91.
+- Higuchi, M. K. K.; Fornari, J.; Del Ben, C. M.; Graeff, F. G.; Leite, J.
+  P. (2011). Reciprocal Modulation of Cognitive and Emotional Aspects in
+  Pianistic Performances. PLoS ONE, 6(9), e24437.
+- Repp, B. H. (1992). Diversity and commonality in music performance: An
+  analysis of timing microstructure in Schumann's "Träumerei". JASA,
+  92(5), 2546-2568.
+- Sloboda, J. A.; Lehmann, A. C. (2001). Tracking Performance Correlates of
+  Changes in Perceived Intensity of Emotion During Different
+  Interpretations of a Chopin Piano Prelude. Music Perception, 19(1),
+  87-120.
 
 ## Pedais
 
@@ -386,12 +566,18 @@ eventos internos (`eventos::de_midi`), para quando houver entrada MIDI.
 | `src/ressonancia.rs` | ressonância simpática: as cordas livres excitadas pelo cavalete |
 | `src/partitura.rs` | o que está escrito: notas, pautas, andamento, pedal; exemplos |
 | `src/musicxml.rs` | leitor simplificado de MusicXML 4.0                        |
-| `src/player.rs`  | o pianista: mãos, corpo, tempo, força, pé                  |
+| `src/acervo.rs`  | acervo de partituras: índice do cabeçalho, busca, configuração |
+| `src/expressao.rs` | motor de expressão: perfis, frases, relógio da execução, força, articulação |
+| `src/emocao.rs`  | emoção percebida estimada (valência e ativação) e resumo de uma execução |
+| `src/player.rs`  | o pianista: mãos, dedos, corpo, pé                         |
 | `src/dedilhado.rs` | dedilhado pelo modelo ergonômico de Parncutt            |
 | `src/gui/linha_do_tempo.rs` | posições, zoom, grade e o que está visível (testável sem janela) |
 | `src/gui/transporte.rs` | tocar, pausar, parar e saltar, alimentando o motor aos poucos |
 | `src/gui/mod.rs` | liga a interface ao player e ao motor; captura em PNG     |
+| `src/gui/acervo.rs` | tela Acervo: leitura em segundo plano, busca, recentes  |
 | `ui/piano_roll.slint` | componentes visuais do piano roll e do painel da partitura |
+| `ui/acervo.slint` | tela Acervo: busca, compositores, lista e detalhe        |
+| `ui/comum.slint` | componentes usados por mais de uma tela                   |
 | `src/notacao.rs` | partitura pelo Verovio: sistemas, posições das notas, ligação com a `Partitura` |
 | `src/gui/painel.rs` | painel da partitura: diagramação em segundo plano, cache, rolagem |
 | `src/motor.rs`   | agenda eventos por quadro, blocos de 128, medição de tempo |
@@ -428,6 +614,9 @@ contém o instante (resolução de 2,7 ms).
 7. ~~Pé nos pedais, interpretação mais humana~~ (versão inicial: pedal
    automático pela harmonia, melodia adiantada, acentos métricos,
    ritardando final, articulações)
+8. ~~Motor de expressão e emoção percebida~~ (versão inicial: perfis
+   contemplativa, enérgica e melancólica; plano Valência x Ativação e faixa
+   de emoção na interface)
 
 ## Pendências
 
@@ -525,14 +714,31 @@ feitas durante o desenvolvimento.
 - **Pé automático simples:** reconhece acordes por modelo (sem tonalidade
   nem condução de vozes), não faz meio pedal nem pedal de efeito, e em
   passagens cromáticas ou muito rápidas tende a soltar cedo. O una corda
-  automático olha só a dinâmica escrita (pp ou menos); sostenuto
-  automático não existe. Todas as pisadas são no fundo (100%).
-- **Interpretação:** a humanização é por regras fixas (adiantar a melodia,
-  acentos métricos, ritardando final); não há fraseado (respiração no fim
-  das frases), rubato nem dinâmica pela forma da melodia.
+  automático olha só a dinâmica escrita; sostenuto automático não existe.
+  As pisadas são no fundo, menos o meio pedal fixo da interpretação
+  enérgica.
 - **MusicXML:** sem `score-timewise`, repetições e ornamentos; dinâmicas
   valem para a parte toda (as duas pautas); o crescendo vai até a dinâmica
   seguinte (sem ela, muda pouco).
+
+### Motor de expressão e emoção percebida
+
+- **Perfis sem calibração com ouvintes:** os valores seguem a direção da
+  literatura, mas não foram ajustados nem validados com testes de escuta;
+  os pesos da emoção percebida também são escolhidos à mão (a literatura
+  usa modelos treinados em áudio, com características aprendidas).
+- **Frases de quatro compassos fixos** (mais as fermatas): não há análise
+  de frase pela melodia, pelas cadências ou por pausas, e nem hierarquia
+  (frase, período, seção) para os ritardandos maiores de Repp.
+- **Sem dinâmica pela forma da melodia** (subir crescendo, descer
+  diminuendo) nem rubato compensado entre as mãos.
+- **Emoção sem atraso de resposta:** o ouvinte reage meio a um compasso
+  depois (2 a 4 s, Sloboda e Lehmann); a faixa mostra a estimativa da
+  janela centrada no instante.
+- **Modo pela janela de 8 s:** passagens cromáticas ou modulações rápidas
+  confundem a estimativa de maior e menor; peças atonais ficam perto de 0.
+- **Perfil vale para a peça inteira:** não dá para mudar de interpretação
+  num trecho (ex.: uma seção contemplativa e outra enérgica).
 
 ### Interface (piano roll)
 
@@ -544,8 +750,8 @@ feitas durante o desenvolvimento.
   erro ao escolher) e entradas sem uso prático. A escolha e o volume não são
   lembrados entre execuções.
 - **Abrir arquivo:** o diálogo bloqueia a interface enquanto está aberto
-  (a reprodução é pausada antes); não há arrastar e soltar nem lista de
-  arquivos recentes.
+  (a reprodução é pausada antes); não há arrastar e soltar. As recentes só
+  existem no Acervo, e só para arquivos de dentro da pasta dele.
 - **Interação não testada automaticamente:** rolagem, zoom, cliques e a
   sincronia do playhead com o som foram conferidos só pelas capturas e por
   abrir a janela; o sentido da roda pode estar invertido em algum sistema.
@@ -562,6 +768,26 @@ feitas durante o desenvolvimento.
   rasterizar as camadas fixas em imagem.
 - **Camada das cordas vibrando** (o diferencial planejado: mostrar o que
   ainda soa pelo pedal e pelo modelo físico) ainda não existe.
+
+### Acervo de partituras
+
+- **Metadados de quem subiu:** compositores escritos de vários jeitos não
+  são unificados (`Bach` e `J.S. Bach` aparecem separados na lista, embora
+  a busca ache os dois); há títulos vazios, duplicatas e nomes de
+  instrumento estranhos.
+- **Sem prévia:** a tela não mostra a partitura antes de abrir, nem
+  quantos compassos ela tem.
+- **Só piano por heurística:** nomes de partes de teclado ou uma parte com
+  duas pautas; uma redução para piano com nome de outro instrumento fica
+  de fora.
+- **Muitas partes:** partituras de orquestra ou coral abrem, mas a
+  primeira parte vai para a pauta de cima e as outras para a de baixo (ver
+  [MusicXML](#musicxml)): o piano toca uma redução crua.
+- **Índice não percebe mudanças:** arquivos novos na pasta só aparecem
+  depois de **Atualizar índice**.
+- **Interação não testada automaticamente:** teclado, duplo clique e o
+  diálogo de pasta foram conferidos pelo código e pelas capturas, não por
+  testes de interface.
 
 ### Partitura tradicional
 

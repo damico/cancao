@@ -47,18 +47,27 @@ use crate::partitura::{Nota, Partitura, Pauta};
 /// O texto MusicXML de um arquivo `.musicxml`/`.xml`, ou de dentro de um
 /// `.mxl` (ZIP: o arquivo principal vem indicado em META-INF/container.xml).
 pub fn ler_texto(caminho: &Path) -> Result<String, String> {
+    ler_inicio(caminho, u64::MAX)
+}
+
+/// Como [`ler_texto`], mas só os primeiros `limite` bytes do MusicXML (o
+/// cabeçalho, para indexar sem descomprimir tudo).
+pub fn ler_inicio(caminho: &Path, limite: u64) -> Result<String, String> {
+    use std::io::{Read, Seek};
     let erro = |e: &dyn std::fmt::Display| format!("{}: {e}", caminho.display());
-    let bytes = std::fs::read(caminho).map_err(|e| erro(&e))?;
-    if !bytes.starts_with(b"PK") {
-        return String::from_utf8(bytes).map_err(|e| erro(&e));
+    let mut arquivo = std::fs::File::open(caminho).map_err(|e| erro(&e))?;
+    let mut assinatura = [0u8; 2];
+    let zipado = arquivo.read_exact(&mut assinatura).is_ok() && &assinatura == b"PK";
+    arquivo.rewind().map_err(|e| erro(&e))?;
+    let mut bytes = Vec::new();
+    if !zipado {
+        arquivo.take(limite).read_to_end(&mut bytes).map_err(|e| erro(&e))?;
+        return Ok(decodificar(bytes));
     }
-    let mut zip = zip::ZipArchive::new(std::io::Cursor::new(bytes)).map_err(|e| erro(&e))?;
-    let mut ler_entrada = |nome: &str| -> Result<String, String> {
-        let mut s = String::new();
-        std::io::Read::read_to_string(&mut zip.by_name(nome).map_err(|e| erro(&e))?, &mut s).map_err(|e| erro(&e))?;
-        Ok(s)
-    };
-    let container = ler_entrada("META-INF/container.xml")?;
+    let mut zip = zip::ZipArchive::new(std::io::BufReader::new(arquivo)).map_err(|e| erro(&e))?;
+    let mut container = Vec::new();
+    zip.by_name("META-INF/container.xml").and_then(|mut z| Ok(z.read_to_end(&mut container)?)).map_err(|e| erro(&e))?;
+    let container = decodificar(container);
     let doc = Document::parse(&container).map_err(|e| erro(&e))?;
     let principal = doc
         .descendants()
@@ -66,7 +75,22 @@ pub fn ler_texto(caminho: &Path) -> Result<String, String> {
         .and_then(|n| n.attribute("full-path"))
         .ok_or_else(|| erro(&"MXL sem rootfile em META-INF/container.xml"))?
         .to_string();
-    ler_entrada(&principal)
+    zip.by_name(&principal).map_err(|e| erro(&e))?.take(limite).read_to_end(&mut bytes).map_err(|e| erro(&e))?;
+    Ok(decodificar(bytes))
+}
+
+/// Bytes do XML para texto: UTF-8 (o comum) ou UTF-16 com BOM; um corte no
+/// meio de um caractere (em [`ler_inicio`]) vira o caractere de troca.
+fn decodificar(bytes: Vec<u8>) -> String {
+    let utf16 = |par: fn([u8; 2]) -> u16| {
+        let unidades: Vec<u16> = bytes[2..].as_chunks::<2>().0.iter().map(|&c| par(c)).collect();
+        String::from_utf16_lossy(&unidades)
+    };
+    match bytes.get(..2) {
+        Some([0xFF, 0xFE]) => utf16(u16::from_le_bytes),
+        Some([0xFE, 0xFF]) => utf16(u16::from_be_bytes),
+        _ => String::from_utf8(bytes).unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned()),
+    }
 }
 
 pub fn ler(caminho: &Path) -> Result<Partitura, String> {

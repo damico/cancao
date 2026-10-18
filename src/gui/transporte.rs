@@ -80,15 +80,19 @@ impl Transporte {
         let pos_quadro = (self.pos_s * self.taxa) as u64;
         self.proximo = self.eventos.partition_point(|e| e.quadro < pos_quadro);
         // saltando para o meio de um trecho com pedal: reconstrói o sustain
-        let sustain = self.eventos[..self.proximo]
-            .iter()
-            .rev()
-            .find_map(|e| match e.evento {
-                Evento::Pedal { pedal: Pedal::Sustain, valor } => Some(valor),
-                _ => None,
-            })
-            .unwrap_or(0.0);
-        envia(EventoAgendado { quadro: inicio, evento: Evento::Pedal { pedal: Pedal::Sustain, valor: sustain } });
+        // e o una corda (o sostenuto depende de quais teclas estavam
+        // abaixadas quando desceu; não dá para reconstruir)
+        for qual in [Pedal::Sustain, Pedal::UnaCorda] {
+            let valor = self.eventos[..self.proximo]
+                .iter()
+                .rev()
+                .find_map(|e| match e.evento {
+                    Evento::Pedal { pedal, valor } if pedal == qual => Some(valor),
+                    _ => None,
+                })
+                .unwrap_or(0.0);
+            envia(EventoAgendado { quadro: inicio, evento: Evento::Pedal { pedal: qual, valor } });
+        }
         self.tocando = true;
         self.alimentar(quadro, envia);
     }
@@ -171,11 +175,12 @@ mod testes {
             true
         };
         t.tocar(5000, &mut envia);
-        // pedal inicial (solto) + notas em 0, 1 e 2 s (antecedência de 2 s)
-        assert_eq!(enviados.borrow().len(), 4);
-        assert_eq!(enviados.borrow()[1].quadro, 5000 + 80); // ancorado com a folga
+        // sustain e una corda iniciais (soltos) + notas em 0, 1 e 2 s
+        // (antecedência de 2 s)
+        assert_eq!(enviados.borrow().len(), 5);
+        assert_eq!(enviados.borrow()[2].quadro, 5000 + 80); // ancorado com a folga
         t.alimentar(5000 + 80 + 3000, &mut envia);
-        assert!(enviados.borrow().len() > 4);
+        assert!(enviados.borrow().len() > 5);
     }
 
     #[test]

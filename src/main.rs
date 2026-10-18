@@ -21,11 +21,14 @@
 use std::path::PathBuf;
 use std::process::ExitCode;
 
+use cancao::acervo;
 use cancao::corda::{self, NUM_TECLAS};
 use cancao::eventos::{Evento, EventoAgendado};
 use cancao::motor::Motor;
 use cancao::musicxml;
 use cancao::partitura;
+use cancao::emocao;
+use cancao::expressao::Perfil;
 use cancao::player::{Pe, Player};
 use cancao::roteiro::{self, Roteiro};
 use cancao::synth::{BLOCO, MAX_VOZES, Modelo, Synth};
@@ -48,6 +51,10 @@ enum Modo {
     Gui,
     /// piano roll desenhado sem janela, salvo em PNG
     Captura,
+    /// as interpretações da mesma partitura, lado a lado
+    Comparar,
+    /// procura no acervo de partituras
+    Buscar,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -77,6 +84,11 @@ struct Opcoes {
     humanizar: f32,
     /// como o pé pedala
     pe: Pe,
+    /// a interpretação (motor de expressão)
+    perfil: Perfil,
+    /// pasta do acervo (guardada na configuração) e o que procurar nele
+    acervo: Option<PathBuf>,
+    busca: Option<String>,
     modelo: Modelo,
     wav: PathBuf,
     ir_entrada: Option<PathBuf>,
@@ -108,6 +120,14 @@ uso: piano [opções]
   --humanizar 0.5       variações humanas do player (0 = exato)
   --pe auto             pedal: auto (marcações da partitura; sem elas, o pé
                         decide), partitura, automatico ou nenhum
+  --interpretacao neutra  perfil expressivo: neutra, contemplativa, energica
+                        ou melancolica
+  --comparar            mede as quatro interpretações da partitura (tempo,
+                        força, articulação, agógica, pedal, emoção estimada)
+  --acervo pasta        pasta com muitas partituras (.mxl, .musicxml): fica
+                        guardada e aparece na tela Acervo da interface
+  --buscar texto        procura no acervo por título, compositor ou
+                        instrumento (na captura, abre a tela Acervo)
   --render saida.wav    grava num WAV em vez de tocar (padrão: as 88 teclas;
                         combina com --nota, --demo e --pedais)
   --bench               mede o tempo de síntese no pior caso (32 vozes)
@@ -144,6 +164,9 @@ fn ler_opcoes() -> Result<Opcoes, String> {
         alinhada: false,
         humanizar: 0.5,
         pe: Pe::Auto,
+        perfil: Perfil::Neutra,
+        acervo: None,
+        busca: None,
         modelo: Modelo::Modal,
         wav: PathBuf::new(),
         ir_entrada: None,
@@ -180,6 +203,19 @@ fn ler_opcoes() -> Result<Opcoes, String> {
                     "automatico" => Pe::Automatico,
                     "nenhum" => Pe::Nenhum,
                     m => return Err(format!("--pe desconhecido: {m} (auto, partitura, automatico, nenhum)")),
+                }
+            }
+            "--interpretacao" => {
+                let nome = valor()?;
+                op.perfil = Perfil::de_nome(&nome)
+                    .ok_or(format!("--interpretacao desconhecida: {nome} (neutra, contemplativa, energica, melancolica)"))?;
+            }
+            "--comparar" => op.modo = Modo::Comparar,
+            "--acervo" => op.acervo = Some(valor()?.into()),
+            "--buscar" => {
+                op.busca = Some(valor()?);
+                if op.modo == Modo::Interativo {
+                    op.modo = Modo::Buscar;
                 }
             }
             "--humanizar" => op.humanizar = valor()?.parse().map_err(|_| "--humanizar inválido")?,
@@ -237,8 +273,11 @@ fn ler_opcoes() -> Result<Opcoes, String> {
             _ => return Err(format!("opção desconhecida: {a}\n{USO}")),
         }
     }
-    if matches!(op.modo, Modo::Gui | Modo::Captura) {
+    if matches!(op.modo, Modo::Gui | Modo::Captura | Modo::Comparar | Modo::Buscar) {
         // a interface escolhe o que mostrar; o roteiro não importa
+    } else if op.acervo.is_some() && op.roteiro.is_none() && !render && op.modo == Modo::Interativo {
+        // só a pasta: indexa e mostra o que tem nela
+        op.modo = Modo::Buscar;
     } else if render {
         op.modo = Modo::Render;
         op.roteiro.get_or_insert(QualRoteiro::Teclas);
@@ -259,7 +298,7 @@ fn marcos_em_linhas(op: &Opcoes) -> bool {
 fn carregar_partitura(op: &Opcoes) -> Result<(partitura::Partitura, Option<String>), String> {
     let padrao = PathBuf::from("exemplos/ode.musicxml");
     let arquivo = op.musicxml.clone().or_else(|| {
-        (op.partitura.is_empty() && matches!(op.modo, Modo::Gui | Modo::Captura)).then_some(padrao)
+        (op.partitura.is_empty() && matches!(op.modo, Modo::Gui | Modo::Captura | Modo::Comparar)).then_some(padrao)
     });
     match arquivo {
         Some(arquivo) => Ok((musicxml::ler(&arquivo)?, musicxml::ler_texto(&arquivo).ok())),
@@ -273,7 +312,7 @@ fn carregar_partitura(op: &Opcoes) -> Result<(partitura::Partitura, Option<Strin
 fn tocar_partitura(op: &Opcoes) -> Result<Roteiro, String> {
     let (p, _) = carregar_partitura(op)?;
     let e = player_de(op).tocar(&p, TAXA);
-    println!("{}  (humanização {})", p.titulo, op.humanizar);
+    println!("{}  (interpretação {}, humanização {})", p.titulo, op.perfil.nome(), op.humanizar);
     for a in &e.avisos {
         println!("  aviso: {a}");
     }
@@ -281,7 +320,73 @@ fn tocar_partitura(op: &Opcoes) -> Result<Roteiro, String> {
 }
 
 fn player_de(op: &Opcoes) -> Player {
-    Player { humanizacao: op.humanizar, pe: op.pe, ..Player::default() }
+    Player { humanizacao: op.humanizar, pe: op.pe, perfil: op.perfil, ..Player::default() }
+}
+
+/// A pasta do acervo: a da linha de comando (que fica guardada) ou a da
+/// configuração.
+fn pasta_do_acervo(op: &Opcoes) -> Result<PathBuf, String> {
+    let mut config = acervo::Config::carregar();
+    if let Some(p) = &op.acervo {
+        let p = std::fs::canonicalize(p).map_err(|e| format!("{}: {e}", p.display()))?;
+        if config.pasta.as_ref() != Some(&p) {
+            config.pasta = Some(p);
+            config.salvar()?;
+        }
+    }
+    config.pasta.ok_or_else(|| "nenhum acervo configurado: use --acervo pasta".into())
+}
+
+/// Procura no acervo e lista as obras mais relevantes.
+fn buscar(op: &Opcoes) -> Result<(), String> {
+    let pasta = pasta_do_acervo(op)?;
+    let inicio = std::time::Instant::now();
+    let a = acervo::Acervo::abrir(&pasta, &acervo::Progresso::default(), false)?;
+    println!("{}: {} partituras ({:.1} s)", pasta.display(), a.obras.len(), inicio.elapsed().as_secs_f64());
+    let consulta = op.busca.clone().unwrap_or_default();
+    if consulta.trim().is_empty() {
+        let nomes: Vec<String> = a.compositores().into_iter().map(|(n, c)| format!("{n} ({c})")).collect();
+        println!("compositores: {}", nomes.join(", "));
+        return Ok(());
+    }
+    let achadas = a.buscar(&consulta, false);
+    println!("\"{consulta}\": {} encontradas\n", achadas.len());
+    for &i in achadas.iter().take(25) {
+        let o = &a.obras[i];
+        println!("{}  |  {}  |  {}\n    {}", o.titulo, o.compositor, o.instrumentos, a.caminho(o).display());
+    }
+    Ok(())
+}
+
+/// As quatro interpretações da mesma partitura, medidas nelas mesmas.
+fn comparar(op: &Opcoes) -> Result<(), String> {
+    let (p, _) = carregar_partitura(op)?;
+    println!("{}: as quatro interpretações", p.titulo);
+    println!("(emoção: estimativa por regras a partir da execução, de -1 a 1; não é medição)\n");
+    println!(
+        "{:<14} {:>8} {:>9} {:>6} {:>6} {:>11} {:>8} {:>8} {:>10} {:>9} {:>9}",
+        "interpretação", "duração", "andamento", "força", "faixa", "articulação", "agógica", "sustain", "una corda", "valência", "ativação"
+    );
+    for perfil in Perfil::TODOS {
+        let e = Player { perfil, ..player_de(op) }.tocar(&p, TAXA);
+        let t = emocao::trajetoria(&p, &e);
+        let r = emocao::resumir(&p, &e, &t);
+        println!(
+            "{:<14} {:>6.1} s {:>8.0}% {:>6.2} {:>6.2} {:>10.0}% {:>7.1}% {:>7.0}% {:>9.0}% {:>+9.2} {:>+9.2}",
+            perfil.nome(),
+            r.duracao_s,
+            100.0 * r.andamento,
+            r.forca,
+            r.faixa,
+            100.0 * r.articulacao,
+            100.0 * r.agogica,
+            100.0 * r.sustain,
+            100.0 * r.una_corda,
+            r.valencia,
+            r.ativacao
+        );
+    }
+    Ok(())
 }
 
 /// Partitura e a execução do player, para a interface.
@@ -462,6 +567,9 @@ fn clonar(op: &Opcoes) -> Opcoes {
         alinhada: op.alinhada,
         humanizar: op.humanizar,
         pe: op.pe,
+        perfil: op.perfil,
+        acervo: op.acervo.clone(),
+        busca: op.busca.clone(),
         modelo: op.modelo,
         segurar_s: op.segurar_s,
         wav: op.wav.clone(),
@@ -504,8 +612,15 @@ fn main() -> ExitCode {
         }
         Modo::Render => render_wav(&op),
         Modo::Bench => benchmark(&op),
+        Modo::Comparar => comparar(&op),
+        Modo::Buscar => buscar(&op),
         #[cfg(feature = "gui")]
-        Modo::Captura => peca(&op).and_then(|p| cancao::gui::capturar(p, player_de(&op), &op.captura, op.posicao, op.modo_partitura, op.alinhada, 1400, 860)),
+        Modo::Captura => peca(&op).and_then(|p| {
+            // a pasta da linha de comando ou a configurada, sem guardar nada
+            let pasta = op.busca.as_ref().and(op.acervo.clone().or(acervo::Config::carregar().pasta));
+            let acervo = pasta.as_deref().map(|d| (d, op.busca.as_deref().unwrap_or("")));
+            cancao::gui::capturar(p, player_de(&op), &op.captura, op.posicao, op.modo_partitura, op.alinhada, acervo, 1400, 860)
+        }),
         #[cfg(feature = "gui")]
         Modo::Gui => peca(&op).and_then(|p| {
             let op_motor = clonar(&op);

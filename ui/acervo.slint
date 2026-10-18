@@ -1,0 +1,522 @@
+// Copyright 2026 José Damico <jose.damico@scicrop.com>
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import { LineEdit, ListView } from "std-widgets.slint";
+import { Botao } from "comum.slint";
+
+// Tela Acervo: procurar partituras numa pasta grande (o PDMX, por exemplo,
+// tem nomes de arquivo que são só códigos). O Rust indexa e busca; aqui só
+// se mostra e se repassam os gestos.
+
+// uma partitura nos resultados
+export struct ObraVis {
+    // posição no acervo (para abrir)
+    indice: int,
+    titulo: string,
+    compositor: string,
+    instrumentos: string,
+    // "1 parte, 2 pautas"
+    formacao: string,
+    piano: bool,
+    arquivo: string,
+}
+
+// um compositor sugerido, com quantas obras dele há no acervo
+export struct SugestaoVis {
+    nome: string,
+    contagem: int,
+}
+
+component Chip inherits Rectangle {
+    in property <string> texto;
+    in property <string> extra;
+    in property <bool> ativo;
+    callback clicado();
+    height: 26px;
+    border-radius: 13px;
+    background: ativo ? #5a4a20 : (toque.has-hover ? #3b3d43 : #2f3135);
+    border-width: 1px;
+    border-color: ativo ? #f0c040 : #45474e;
+    HorizontalLayout {
+        padding-left: 11px;
+        padding-right: 11px;
+        spacing: 5px;
+        Text {
+            text: root.texto;
+            color: #e6e6e6;
+            font-size: 12px;
+            vertical-alignment: center;
+        }
+        if root.extra != "": Text {
+            text: root.extra;
+            color: #8a8c92;
+            font-size: 11px;
+            vertical-alignment: center;
+        }
+    }
+    toque := TouchArea {
+        clicked => { root.clicado(); }
+    }
+}
+
+// uma linha da lista: título em destaque, compositor e instrumentos embaixo
+component LinhaObra inherits Rectangle {
+    in property <ObraVis> obra;
+    in property <bool> selecionada;
+    callback clicado();
+    callback aberto();
+    height: 52px;
+    background: selecionada ? #3a3420 : (toque.has-hover ? #2c2d31 : transparent);
+    Rectangle {
+        x: 0px;
+        width: 3px;
+        background: selecionada ? #f0c040 : transparent;
+    }
+    VerticalLayout {
+        padding-left: 14px;
+        padding-right: 12px;
+        padding-top: 7px;
+        padding-bottom: 7px;
+        spacing: 2px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.obra.titulo;
+                color: #f2f2f2;
+                font-size: 14px;
+                font-weight: 600;
+                overflow: elide;
+                horizontal-stretch: 1;
+            }
+            if root.obra.piano: Rectangle {
+                width: 44px;
+                height: 18px;
+                border-radius: 9px;
+                background: #2b3a4f;
+                Text {
+                    text: "piano";
+                    color: #9cc3f0;
+                    font-size: 10px;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Text {
+            text: (root.obra.compositor == "" ? "compositor não informado" : root.obra.compositor) + (root.obra.instrumentos == "" ? "" : "  -  " + root.obra.instrumentos);
+            color: root.obra.compositor == "" ? #6c6f76 : #a8abb2;
+            font-size: 12px;
+            overflow: elide;
+        }
+    }
+    Rectangle {
+        y: parent.height - 1px;
+        height: 1px;
+        background: #2a2b2f;
+    }
+    toque := TouchArea {
+        clicked => { root.clicado(); }
+        double-clicked => { root.aberto(); }
+    }
+}
+
+export component TelaAcervo inherits Rectangle {
+    // pasta configurada ("" = nenhuma)
+    in property <string> pasta;
+    // 0 = sem pasta, 1 = indexando, 2 = pronto, 3 = erro
+    in property <int> estado;
+    in property <float> progresso;
+    // "254.035 partituras", o andamento da indexação ou o erro
+    in property <string> status;
+    // o que a lista mostra ("29 encontradas", "Abertas recentemente")
+    in property <string> titulo-lista;
+    in property <[ObraVis]> resultados;
+    in property <[SugestaoVis]> sugestoes;
+    in-out property <string> consulta;
+    in-out property <bool> so-piano;
+    in-out property <int> selecionada: 0;
+    callback buscar();
+    callback escolher-pasta();
+    callback reindexar();
+    // a obra (ObraVis.indice) e se já começa a tocar
+    callback abrir(int, bool);
+    callback fechar();
+
+    property <length> altura-linha: 52px;
+    background: #1e1f22;
+
+    // segura os cliques e a roda para não chegarem ao piano roll embaixo
+    TouchArea {
+        scroll-event(e) => { return accept; }
+    }
+
+    FocusScope {
+        capture-key-pressed(e) => {
+            if e.text == Key.Escape {
+                root.fechar();
+                return accept;
+            }
+            reject
+        }
+
+        VerticalLayout {
+            // cabeçalho: voltar, nome da tela, pasta
+            Rectangle {
+                height: 48px;
+                background: #26272b;
+                HorizontalLayout {
+                    padding: 9px;
+                    spacing: 10px;
+                    Botao {
+                        texto: "Voltar ao piano";
+                        clicado => { root.fechar(); }
+                    }
+                    Text {
+                        text: "Acervo de partituras";
+                        color: #f2f2f2;
+                        font-size: 15px;
+                        font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: root.pasta;
+                        color: #8a8c92;
+                        font-size: 12px;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                        overflow: elide;
+                        horizontal-stretch: 1;
+                    }
+                    if root.pasta != "": Botao {
+                        texto: "Trocar pasta";
+                        clicado => { root.escolher-pasta(); }
+                    }
+                    if root.estado == 2: Botao {
+                        texto: "Atualizar índice";
+                        clicado => { root.reindexar(); }
+                    }
+                }
+            }
+
+            // sem pasta: um convite só, no meio
+            if root.estado == 0: Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 520px;
+                            background: #26272b;
+                            border-radius: 8px;
+                            VerticalLayout {
+                                padding: 28px;
+                                spacing: 14px;
+                                Text {
+                                    text: "Onde estão suas partituras?";
+                                    color: #f2f2f2;
+                                    font-size: 20px;
+                                    font-weight: 700;
+                                }
+                                Text {
+                                    text: "Escolha uma pasta com arquivos .mxl, .musicxml ou .xml, em qualquer subpasta (por exemplo o PDMX descompactado). Na primeira vez o cancao lê título, compositor e instrumentos de cada arquivo e guarda um índice; depois a busca é instantânea.";
+                                    color: #b8bac0;
+                                    font-size: 13px;
+                                    wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    alignment: start;
+                                    Botao {
+                                        texto: "Escolher pasta...";
+                                        ativo: true;
+                                        height: 36px;
+                                        clicado => { root.escolher-pasta(); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // indexando: barra de andamento
+            if root.estado == 1: Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        alignment: center;
+                        VerticalLayout {
+                            width: 520px;
+                            spacing: 12px;
+                            Text {
+                                text: "Lendo o acervo";
+                                color: #f2f2f2;
+                                font-size: 18px;
+                                font-weight: 700;
+                            }
+                            Rectangle {
+                                height: 8px;
+                                border-radius: 4px;
+                                background: #33353a;
+                                Rectangle {
+                                    x: 0px;
+                                    width: parent.width * root.progresso;
+                                    border-radius: 4px;
+                                    background: #f0c040;
+                                }
+                            }
+                            Text {
+                                text: root.status;
+                                color: #9fa2a8;
+                                font-size: 12px;
+                            }
+                        }
+                    }
+                }
+            }
+
+            // erro: o motivo e a saída
+            if root.estado == 3: Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout {
+                        alignment: center;
+                        VerticalLayout {
+                            width: 520px;
+                            spacing: 12px;
+                            Text {
+                                text: root.status;
+                                color: #e8915a;
+                                font-size: 13px;
+                                wrap: word-wrap;
+                            }
+                            HorizontalLayout {
+                                alignment: start;
+                                Botao {
+                                    texto: "Escolher outra pasta...";
+                                    clicado => { root.escolher-pasta(); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // pronto: busca, sugestões, lista e detalhe
+            if root.estado == 2: acao := FocusScope {
+                vertical-stretch: 1;
+                function mover(passo: int) {
+                    if root.resultados.length == 0 {
+                        return;
+                    }
+                    root.selecionada = Math.max(0, Math.min(root.resultados.length - 1, root.selecionada + passo));
+                    // a linha escolhida sempre à vista
+                    let topo = root.selecionada * root.altura-linha;
+                    if topo < -lista.content-y {
+                        lista.content-y = -topo;
+                    } else if topo + root.altura-linha > -lista.content-y + lista.visible-height {
+                        lista.content-y = -(topo + root.altura-linha - lista.visible-height);
+                    }
+                }
+
+                function abrir-selecionada(tocar: bool) {
+                    if root.selecionada < root.resultados.length {
+                        root.abrir(root.resultados[root.selecionada].indice, tocar);
+                    }
+                }
+
+                // qualquer mudança refaz a lista do começo (digitar, o X da
+                // caixa, um compositor, o filtro)
+                property <string> consulta: root.consulta;
+                property <bool> so-piano: root.so-piano;
+                changed consulta => { self.recomecar(); }
+                changed so-piano => { self.recomecar(); }
+                function recomecar() {
+                    root.selecionada = 0;
+                    lista.content-y = 0;
+                    root.buscar();
+                }
+
+                capture-key-pressed(e) => {
+                    if e.text == Key.DownArrow {
+                        self.mover(1);
+                        return accept;
+                    }
+                    if e.text == Key.UpArrow {
+                        self.mover(-1);
+                        return accept;
+                    }
+                    if e.text == Key.PageDown {
+                        self.mover(10);
+                        return accept;
+                    }
+                    if e.text == Key.PageUp {
+                        self.mover(-10);
+                        return accept;
+                    }
+                    reject
+                }
+                VerticalLayout {
+                    padding: 16px;
+                    padding-bottom: 12px;
+                    spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 12px;
+                        busca := LineEdit {
+                            height: 40px;
+                            font-size: 15px;
+                            horizontal-stretch: 1;
+                            placeholder-text: "Procure por título, compositor ou instrumento (ex.: chopin nocturne, bwv 846, villa-lobos)";
+                            text <=> root.consulta;
+                            accepted => { acao.abrir-selecionada(true); }
+                            init => { self.focus(); }
+                        }
+                        Chip {
+                            y: (parent.height - self.height) / 2;
+                            texto: "Só piano";
+                            ativo: root.so-piano;
+                            clicado => {
+                                root.so-piano = !root.so-piano;
+                                busca.focus();
+                            }
+                        }
+                    }
+                    // compositores: um clique e a busca já está feita
+                    FlexboxLayout {
+                        spacing: 6px;
+                        for s in root.sugestoes: Chip {
+                            texto: s.nome;
+                            extra: s.contagem;
+                            ativo: root.consulta == s.nome;
+                            clicado => {
+                                root.consulta = s.nome;
+                                busca.focus();
+                            }
+                        }
+                    }
+                    HorizontalLayout {
+                        spacing: 16px;
+                        vertical-stretch: 1;
+                        VerticalLayout {
+                            horizontal-stretch: 1;
+                            spacing: 6px;
+                            Text {
+                                text: root.titulo-lista;
+                                color: #9fa2a8;
+                                font-size: 12px;
+                            }
+                            Rectangle {
+                                vertical-stretch: 1;
+                                background: #232427;
+                                border-radius: 6px;
+                                clip: true;
+                                lista := ListView {
+                                    for o[i] in root.resultados: LinhaObra {
+                                        obra: o;
+                                        selecionada: i == root.selecionada;
+                                        clicado => {
+                                            root.selecionada = i;
+                                            busca.focus();
+                                        }
+                                        aberto => { root.abrir(o.indice, true); }
+                                    }
+                                }
+                                if root.resultados.length == 0: Text {
+                                    text: root.consulta == "" ? "Nada aqui ainda." : "Nenhuma partitura com essas palavras. Tente menos palavras, ou só o sobrenome do compositor.";
+                                    color: #8a8c92;
+                                    font-size: 13px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                    wrap: word-wrap;
+                                }
+                            }
+                            Text {
+                                text: "Setas: escolher  |  Enter ou duplo clique: tocar  |  Esc: voltar ao piano";
+                                color: #6c6f76;
+                                font-size: 11px;
+                            }
+                        }
+                        // a partitura escolhida
+                        Rectangle {
+                            width: 340px;
+                            background: #26272b;
+                            border-radius: 6px;
+                            if root.selecionada < root.resultados.length: VerticalLayout {
+                                property <ObraVis> o: root.resultados[root.selecionada];
+                                padding: 18px;
+                                spacing: 10px;
+                                alignment: start;
+                                Text {
+                                    text: o.titulo;
+                                    color: #f2f2f2;
+                                    font-size: 18px;
+                                    font-weight: 700;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: o.compositor == "" ? "compositor não informado" : o.compositor;
+                                    color: o.compositor == "" ? #6c6f76 : #d6d8dc;
+                                    font-size: 14px;
+                                    wrap: word-wrap;
+                                }
+                                Rectangle { height: 4px; }
+                                Text {
+                                    text: "Instrumentos";
+                                    color: #8a8c92;
+                                    font-size: 11px;
+                                }
+                                Text {
+                                    text: o.instrumentos == "" ? "não informados" : o.instrumentos;
+                                    color: #b8bac0;
+                                    font-size: 12px;
+                                    wrap: word-wrap;
+                                }
+                                Text {
+                                    text: o.formacao;
+                                    color: #b8bac0;
+                                    font-size: 12px;
+                                }
+                                Text {
+                                    text: "Arquivo";
+                                    color: #8a8c92;
+                                    font-size: 11px;
+                                }
+                                Text {
+                                    text: o.arquivo;
+                                    color: #8a8c92;
+                                    font-size: 11px;
+                                    wrap: word-wrap;
+                                }
+                                Rectangle { height: 6px; }
+                                Botao {
+                                    texto: "Tocar no piano";
+                                    ativo: true;
+                                    height: 36px;
+                                    clicado => { root.abrir(o.indice, true); }
+                                }
+                                Botao {
+                                    texto: "Abrir sem tocar";
+                                    clicado => { root.abrir(o.indice, false); }
+                                }
+                            }
+                        }
+                    }
+            }
+            }
+        }
+    }
+}

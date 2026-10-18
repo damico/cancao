@@ -15,11 +15,14 @@
 
 //! Piano digital por modelagem física.
 
+pub mod acervo;
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod corda;
 pub mod dedilhado;
+pub mod emocao;
 pub mod eventos;
+pub mod expressao;
 pub mod guia;
 #[cfg(feature = "gui")]
 pub mod gui;

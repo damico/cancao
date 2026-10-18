@@ -1,0 +1,41 @@
+// Copyright 2026 José Damico <jose.damico@scicrop.com>
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+// Componentes usados por mais de uma tela.
+
+export component Botao inherits Rectangle {
+    in property <string> texto;
+    in property <bool> ativo: false;
+    callback clicado();
+    height: 30px;
+    min-width: 64px;
+    border-radius: 4px;
+    background: toque.pressed ? #4a4c53 : (ativo ? #5a4a20 : (toque.has-hover ? #3b3d43 : #33353a));
+    border-width: 1px;
+    border-color: ativo ? #f0c040 : #45474e;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.texto;
+            color: #e6e6e6;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    toque := TouchArea {
+        clicked => { root.clicado(); }
+    }
+}
