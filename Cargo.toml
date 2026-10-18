@@ -1,0 +1,30 @@
+[package]
+name = "cancao"
+version = "0.1.0"
+edition = "2024"
+description = "Piano digital por modelagem física"
+authors = ["José Damico <jose.damico@scicrop.com>"]
+license = "Apache-2.0"
+
+[[bin]]
+name = "piano"
+path = "src/main.rs"
+
+[features]
+default = ["audio"]
+# saída de áudio em tempo real; sem ela, só --tabela, --render e --bench
+audio = ["dep:cpal"]
+
+[dependencies]
+cpal = { version = "0.15.3", optional = true }
+rtrb = "0.3.1"
+crossterm = "0.28.1"
+libc = "0.2"
+
+[profile.release]
+codegen-units = 1
+lto = "thin"
+
+# os testes sintetizam áudio; sem otimização ficam lentos demais
+[profile.test]
+opt-level = 3

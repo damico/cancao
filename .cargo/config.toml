@@ -1,0 +1,3 @@
+# usa as instruções SIMD da máquina (AVX2 etc.) nos laços de síntese
+[build]
+rustflags = ["-C", "target-cpu=native"]

@@ -1,0 +1,6 @@
+/target
+*.wav
+CLAUDE.md
+*.o
+c_sandbox/piano
+c_sandbox/piano_v1
