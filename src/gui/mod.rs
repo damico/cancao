@@ -42,7 +42,7 @@ use slint::{Color, ComponentHandle, ModelRc, SharedString, VecModel};
 use crate::audio;
 use crate::corda::{self, Corda};
 use crate::dedilhado::Mao;
-use crate::eventos::{Evento, EventoAgendado};
+use crate::eventos::{Evento, EventoAgendado, Pedal};
 use crate::motor::{Estado as EstadoMotor, Motor};
 use crate::musicxml;
 use crate::partitura::Partitura;
@@ -94,6 +94,8 @@ struct App {
     fila: Option<rtrb::Producer<EventoAgendado>>,
     taxa: u32,
     selecionada: Option<usize>,
+    /// pisada de pedal mostrada no inspetor
+    pisada: Option<usize>,
     cor_por_mao: bool,
     modelo_guia: bool,
     /// o player (humanização, pé) para as peças abertas pela interface
@@ -227,6 +229,13 @@ impl App {
         ui.set_formula(format!("{tempos}/{unidade}").into());
         ui.set_zoom(format!("{:.0}%", self.vista.zoom_percentual()).into());
         ui.set_tocando(self.transporte.tocando());
+        // o pé agora: com áudio, o que o instrumento está fazendo; sem, o plano
+        let pe = match &self.relogio {
+            Relogio::Audio(e) => [Pedal::Sustain, Pedal::Sostenuto, Pedal::UnaCorda].map(|p| e.pedal(p)),
+            Relogio::Sistema(_) if agora.is_some() => linha_do_tempo::pedais_em(&self.peca.execucao.pedais, self.transporte.agora_s(self.quadro())),
+            Relogio::Sistema(_) => [0.0; 3],
+        };
+        ui.set_pe_agora(ModelRc::new(VecModel::from(pe.to_vec())));
         ui.set_mensagem(self.mensagem.clone().into());
         self.painel.atualizar(ui, &self.vista, agora, self.transporte.tocando(), self.selecionada);
     }
@@ -288,9 +297,17 @@ impl App {
             .collect();
         let rotulos: Vec<RotuloVis> = g.rotulos.into_iter().map(|(x, t)| RotuloVis { x: x as f32, texto: t.into() }).collect();
         // como o pé pedalou (marcações da partitura ou pedal automático)
-        let pedais: Vec<FaixaVis> = linha_do_tempo::pedais_visiveis(&self.vista, &self.peca.execucao.pedais)
+        let e = &self.peca.execucao;
+        let pedais: Vec<FaixaVis> = linha_do_tempo::pedais_visiveis(&self.vista, &e.pedais, &e.relogio)
             .into_iter()
-            .map(|(x, w)| FaixaVis { x: x as f32, w: w as f32 })
+            .map(|d| FaixaVis {
+                id: d.indice as i32,
+                x: d.x as f32,
+                w: d.w as f32,
+                linha: d.linha as i32,
+                nivel: d.valor,
+                selecionada: self.pisada == Some(d.indice),
+            })
             .collect();
 
         ui.set_notas(ModelRc::new(VecModel::from(notas_vis)));
@@ -303,18 +320,20 @@ impl App {
         ui.set_legenda(ModelRc::new(VecModel::from(self.legenda())));
         ui.set_modo_cor(if self.cor_por_mao { "Cores: mãos" } else { "Cores: vozes" }.into());
         ui.set_modelo(if self.modelo_guia { "Corda: guia de onda" } else { "Corda: modal" }.into());
-        let info = match self.selecionada {
-            Some(i) => {
+        let info = match (self.selecionada, self.pisada) {
+            (_, Some(i)) => linha_do_tempo::descrever_pisada(p, &self.peca.execucao.pedais[i], &self.peca.execucao.relogio),
+            (Some(i), None) => {
                 let tocadas = linha_do_tempo::tocadas_por_nota(p, &self.peca.execucao.notas);
                 linha_do_tempo::descrever(p, i, tocadas[i], &self.cordas)
             }
-            None => "Clique numa nota para ver os detalhes.".into(),
+            (None, None) => "Clique numa nota ou num pedal para ver os detalhes.".into(),
         };
         ui.set_info(info.into());
     }
 
     fn selecionar(&mut self, i: Option<usize>) {
         self.selecionada = i;
+        self.pisada = None;
         self.desenhado = None;
     }
 
@@ -327,6 +346,7 @@ impl App {
         self.transporte = Transporte::new(self.peca.execucao.roteiro.eventos.clone(), self.peca.execucao.roteiro.duracao, self.taxa);
         self.vista = enquadrar(ui, &self.peca.partitura);
         self.selecionada = None;
+        self.pisada = None;
         self.desenhado = None;
         self.mensagem = resumo(&self.peca);
         ui.set_titulo(self.peca.partitura.titulo.clone().into());
@@ -388,6 +408,7 @@ fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, player: Play
         fila: None,
         taxa,
         selecionada: None,
+        pisada: None,
         cor_por_mao: false,
         modelo_guia,
         player,
@@ -485,6 +506,10 @@ fn montar(ui: &PianoRoll, peca: Peca, taxa: u32, modelo_guia: bool, player: Play
         };
     });
     ligar!(on_clicar_fundo, |a| a.selecionar(None));
+    ligar!(on_clicar_pedal, |a, id| {
+        a.selecionar(None);
+        a.pisada = Some(id as usize);
+    });
     ligar!(on_clicar_regua, |a, x| {
         let tempo = a.vista.tempo_de_x(x as f64).max(0.0);
         let s = a.peca.execucao.relogio.segundos(tempo);

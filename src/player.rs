@@ -30,10 +30,12 @@
 //! 4. tempo e força: semínimas viram segundos pelo andamento; a humanização
 //!    (0 = exato) adiciona pequenas variações de tempo e de força e destaca
 //!    a nota mais aguda da mão direita (normalmente a melodia);
-//! 5. pé: executa as marcações de pedal da partitura e, quando ela não marca
-//!    nenhuma, decide sozinho: troca o sustain quando a harmonia muda (o
-//!    baixo de cada tempo muda de nota) e solta nos silêncios; sempre
-//!    abaixando um pouco depois do tempo (pedal sincopado);
+//! 5. pé: executa as marcações dos três pedais da partitura e, para o
+//!    sustain e o una corda que ela não marca, decide sozinho: troca o
+//!    sustain quando a harmonia muda e solta nos silêncios (abaixando um
+//!    pouco depois do tempo, pedal sincopado); usa o una corda nos trechos
+//!    em pp ou mais suave (abaixado um pouco antes das notas); o sostenuto
+//!    só vem da partitura;
 //! 6. articulações escritas: staccato e staccatissimo encurtam, tenuto liga,
 //!    fermata segura mais, acento toca mais forte; o dedilhado escrito é
 //!    seguido sempre que fisicamente possível;
@@ -57,13 +59,18 @@ const ARPEJO_S: f64 = 0.035;
 const FOLGA_S: f64 = 0.008;
 /// O pé abaixa o pedal este tempo depois do início marcado (s).
 const ATRASO_PEDAL_S: f64 = 0.06;
+/// O una corda desce este tempo antes das notas (a mecânica precisa estar
+/// deslocada quando o martelo sai) (s).
+const ANTECIPA_UNA_CORDA_S: f64 = 0.04;
+/// Dinâmica até a qual o pé automático usa o una corda (pp).
+const DINAMICA_UNA_CORDA: f32 = 0.25;
 /// Tudo começa um pouco depois de zero, para a humanização poder adiantar.
 pub const INICIO_S: f64 = 0.05;
 
-/// Como o pé decide o pedal de sustain.
+/// Como o pé decide os pedais.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Pe {
-    /// as marcações da partitura; se ela não marca nenhuma, decide sozinho
+    /// as marcações da partitura; num pedal que ela não marca, decide sozinho
     #[default]
     Auto,
     /// só as marcações da partitura
@@ -131,6 +138,22 @@ impl RelogioExecucao {
     }
 }
 
+/// Uma pisada do pé: qual pedal, quando e quanto.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Pisada {
+    pub pedal: Pedal,
+    /// em semínimas, como escrito (ou decidido)
+    pub abaixa: f64,
+    pub solta: f64,
+    /// instantes reais dos eventos mandados ao instrumento (s)
+    pub abaixa_s: f64,
+    pub solta_s: f64,
+    /// profundidade: 0 = solto, 1 = no fundo
+    pub valor: f32,
+    /// decidida pelo pé (false = marcada na partitura)
+    pub automatica: bool,
+}
+
 /// Uma nota como foi tocada.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NotaTocada {
@@ -150,8 +173,8 @@ pub struct Execucao {
     pub roteiro: Roteiro,
     pub notas: Vec<NotaTocada>,
     pub avisos: Vec<String>,
-    /// como o pé pedalou: (abaixa, solta), em semínimas
-    pub pedais: Vec<(f64, f64)>,
+    /// como o pé pedalou, os três pedais, em ordem de tempo
+    pub pedais: Vec<Pisada>,
     pub relogio: RelogioExecucao,
 }
 
@@ -288,13 +311,8 @@ impl Player {
             tempo(a).unwrap_or(0.0).total_cmp(&tempo(b).unwrap_or(0.0))
         });
         // 5. pé
-        let pedais = match self.pe {
-            Pe::Auto if p.pedais.is_empty() => pedal_automatico(p),
-            Pe::Auto | Pe::Partitura => p.pedais.clone(),
-            Pe::Automatico => pedal_automatico(p),
-            Pe::Nenhum => Vec::new(),
-        };
-        let roteiro = montar_roteiro(&relogio, &pedais, &tocadas, taxa);
+        let pedais = self.pisadas(p, &relogio);
+        let roteiro = montar_roteiro(&pedais, &tocadas, taxa);
         Execucao { roteiro, notas: tocadas, avisos, pedais, relogio }
     }
 }
@@ -348,6 +366,65 @@ fn cabe_num_acorde(classes: u16) -> bool {
             classes & !molde == 0
         })
     })
+}
+
+impl Player {
+    /// O que o pé faz com cada pedal, com os instantes reais.
+    fn pisadas(&self, p: &Partitura, relogio: &RelogioExecucao) -> Vec<Pisada> {
+        let escolher = |marcas: &[(f64, f64)], automatico: fn(&Partitura) -> Vec<(f64, f64)>| -> (Vec<(f64, f64)>, bool) {
+            match self.pe {
+                Pe::Auto if marcas.is_empty() => (automatico(p), true),
+                Pe::Auto | Pe::Partitura => (marcas.to_vec(), false),
+                Pe::Automatico => (automatico(p), true),
+                Pe::Nenhum => (Vec::new(), false),
+            }
+        };
+        let pedais = [
+            // sustain e sostenuto sincopados (depois das notas); una corda antes
+            (Pedal::Sustain, escolher(&p.pedais, pedal_automatico), ATRASO_PEDAL_S, 0.0),
+            (Pedal::Sostenuto, escolher(&p.sostenuto, |_| Vec::new()), ATRASO_PEDAL_S, 0.0),
+            (Pedal::UnaCorda, escolher(&p.una_corda, una_corda_automatica), -ANTECIPA_UNA_CORDA_S, -ANTECIPA_UNA_CORDA_S),
+        ];
+        let mut v: Vec<Pisada> = pedais
+            .into_iter()
+            .flat_map(|(pedal, (trechos, automatica), desce, sobe)| {
+                trechos.into_iter().map(move |(abaixa, solta)| (pedal, abaixa, solta, desce, sobe, automatica))
+            })
+            .map(|(pedal, abaixa, solta, desce, sobe, automatica)| Pisada {
+                pedal,
+                abaixa,
+                solta,
+                abaixa_s: (relogio.segundos(abaixa) + desce).max(0.0),
+                solta_s: relogio.segundos(solta) + sobe,
+                valor: 1.0,
+                automatica,
+            })
+            .collect();
+        v.sort_by(|a, b| a.abaixa.total_cmp(&b.abaixa));
+        v
+    }
+}
+
+/// O pé decide o una corda sozinho: abaixado nos trechos em pp ou mais
+/// suave (de pelo menos uma semínima), solto quando entra uma nota mais
+/// forte.
+pub fn una_corda_automatica(p: &Partitura) -> Vec<(f64, f64)> {
+    let mut notas: Vec<&crate::partitura::Nota> = p.notas.iter().collect();
+    notas.sort_by(|a, b| a.inicio.total_cmp(&b.inicio));
+    let mut trechos = Vec::new();
+    // trecho em curso: (início, fim da última nota suave)
+    let mut atual: Option<(f64, f64)> = None;
+    for n in notas {
+        if n.dinamica <= DINAMICA_UNA_CORDA + 1e-3 {
+            let fim = n.inicio + n.duracao;
+            atual = Some(atual.map_or((n.inicio, fim), |(ini, f)| (ini, f.max(fim))));
+        } else if let Some((ini, f)) = atual.take() {
+            trechos.push((ini, f.min(n.inicio)));
+        }
+    }
+    trechos.extend(atual);
+    trechos.retain(|(a, b)| b - a >= 1.0);
+    trechos
 }
 
 /// O pé decide o sustain sozinho, pela harmonia da mão esquerda: mantém o
@@ -444,7 +521,7 @@ fn redistribuir(p: &Partitura, momentos: &mut BTreeMap<(Mao, i64), Vec<usize>>, 
     }
 }
 
-fn montar_roteiro(relogio: &RelogioExecucao, pedais: &[(f64, f64)], tocadas: &[NotaTocada], taxa: u32) -> Roteiro {
+fn montar_roteiro(pedais: &[Pisada], tocadas: &[NotaTocada], taxa: u32) -> Roteiro {
     let mut r = Roteiro::new(taxa);
     let mut fim = 0f64;
     for n in tocadas {
@@ -452,12 +529,11 @@ fn montar_roteiro(relogio: &RelogioExecucao, pedais: &[(f64, f64)], tocadas: &[N
         r.evento(n.fim_s, Evento::NotaOff { tecla: n.tecla });
         fim = fim.max(n.fim_s);
     }
-    // 5. pé: pedal sincopado, abaixa logo depois do golpe
-    for &(abaixa, solta) in pedais {
-        r.pedal(relogio.segundos(abaixa) + ATRASO_PEDAL_S, Pedal::Sustain, 1.0);
-        let t = relogio.segundos(solta);
-        r.pedal(t, Pedal::Sustain, 0.0);
-        fim = fim.max(t);
+    // 5. pé
+    for d in pedais {
+        r.pedal(d.abaixa_s, d.pedal, d.valor);
+        r.pedal(d.solta_s, d.pedal, 0.0);
+        fim = fim.max(d.solta_s);
     }
     // o que mostrar durante a execução: cada momento com mão e dedos
     let mut por_momento: BTreeMap<(i64, Mao), Vec<&NotaTocada>> = BTreeMap::new();
@@ -610,11 +686,43 @@ mod testes {
         assert_eq!(pedal_automatico(&p2), [(0.0, 4.0), (4.0, 8.0)]);
         // sem marcações na partitura, o pé automático entra sozinho
         let e = exato().tocar(&p, TAXA);
-        assert_eq!(e.pedais, pedais);
+        assert_eq!(trechos(&e, Pedal::Sustain), pedais);
+        assert!(e.pedais.iter().all(|d| d.automatica));
         let so_partitura = Player { pe: Pe::Partitura, ..exato() }.tocar(&p, TAXA);
         assert!(so_partitura.pedais.is_empty());
         let nenhum = Player { pe: Pe::Nenhum, ..exato() }.tocar(&exemplo("acordes").unwrap(), TAXA);
         assert!(nenhum.roteiro.eventos.iter().all(|x| !matches!(x.evento, Evento::Pedal { .. })));
+    }
+
+    fn trechos(e: &Execucao, pedal: Pedal) -> Vec<(f64, f64)> {
+        e.pedais.iter().filter(|d| d.pedal == pedal).map(|d| (d.abaixa, d.solta)).collect()
+    }
+
+    #[test]
+    fn una_corda_no_pp_e_sostenuto_da_partitura() {
+        // 4 semínimas em pp, 2 em f, 1 em pp (curto demais para o pé)
+        let mut notas: Vec<Nota> = (0..7).map(|i| nota_em(i as f64, 1.0, "C4", Pauta::Superior)).collect();
+        for (i, n) in notas.iter_mut().enumerate() {
+            n.dinamica = if (4..6).contains(&i) { 0.7 } else { 0.25 };
+        }
+        notas[6].duracao = 0.5;
+        let p = Partitura { notas, sostenuto: vec![(1.0, 3.0)], ..Partitura::default() };
+        assert_eq!(una_corda_automatica(&p), [(0.0, 4.0)]);
+        let e = exato().tocar(&p, TAXA);
+        assert_eq!(trechos(&e, Pedal::UnaCorda), [(0.0, 4.0)]);
+        assert_eq!(trechos(&e, Pedal::Sostenuto), [(1.0, 3.0)]);
+        // una corda desce antes da 1ª nota; sostenuto depois da nota em que pega
+        let uc = e.pedais.iter().find(|d| d.pedal == Pedal::UnaCorda).unwrap();
+        let so = e.pedais.iter().find(|d| d.pedal == Pedal::Sostenuto).unwrap();
+        let inicio = |i: usize| e.notas.iter().find(|n| n.indice == i).unwrap().inicio_s;
+        assert!(uc.abaixa_s < inicio(0) || uc.abaixa_s == 0.0);
+        assert!(uc.solta_s < inicio(4));
+        assert!(so.abaixa_s > inicio(1) && !so.automatica);
+        // cada pisada vira um evento de abaixar e um de soltar no roteiro
+        let ev = |pedal| e.roteiro.eventos.iter().filter(|x| matches!(x.evento, Evento::Pedal { pedal: q, .. } if q == pedal)).count();
+        assert_eq!(ev(Pedal::UnaCorda), 2);
+        assert_eq!(ev(Pedal::Sostenuto), 2);
+        assert!(Player { pe: Pe::Nenhum, ..exato() }.tocar(&p, TAXA).pedais.is_empty());
     }
 
     #[test]

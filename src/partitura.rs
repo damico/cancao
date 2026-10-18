@@ -67,6 +67,10 @@ pub struct Partitura {
     pub andamentos: Vec<(f64, f64)>,
     /// pedal de sustain: (abaixa, solta), em semínimas
     pub pedais: Vec<(f64, f64)>,
+    /// pedal sostenuto (do meio): (abaixa, solta), em semínimas
+    pub sostenuto: Vec<(f64, f64)>,
+    /// una corda (esquerdo): (abaixa, solta), em semínimas
+    pub una_corda: Vec<(f64, f64)>,
     /// fórmulas de compasso: (a partir de qual semínima, tempos, unidade);
     /// vazio = 4/4
     pub compassos: Vec<(f64, u32, u32)>,
@@ -196,7 +200,7 @@ fn escala() -> Partitura {
         notas.push(nota(t, dur, &format!("{n}{}", 4 + oitava), Pauta::Superior, 0.55));
         notas.push(nota(t, dur, &format!("{n}{}", 3 + oitava), Pauta::Inferior, 0.5));
     }
-    Partitura { titulo: "Escala de Dó maior, duas oitavas".into(), notas, andamentos: vec![(0.0, 100.0)], pedais: vec![], compassos: vec![(0.0, 4, 4)], inicios_compasso: vec![] }
+    Partitura { titulo: "Escala de Dó maior, duas oitavas".into(), notas, andamentos: vec![(0.0, 100.0)], compassos: vec![(0.0, 4, 4)], ..Partitura::default() }
 }
 
 /// I - vi - IV - V - I em Dó, acordes na direita, baixo em oitavas na
@@ -223,7 +227,7 @@ fn acordes() -> Partitura {
         }
         pedais.push((t, t + dur));
     }
-    Partitura { titulo: "Cadência I-vi-IV-V-I em Dó".into(), notas, andamentos: vec![(0.0, 72.0)], pedais, compassos: vec![(0.0, 4, 4)], inicios_compasso: vec![] }
+    Partitura { titulo: "Cadência I-vi-IV-V-I em Dó".into(), notas, andamentos: vec![(0.0, 72.0)], pedais, compassos: vec![(0.0, 4, 4)], ..Partitura::default() }
 }
 
 /// Situações que o corpo limita: um acorde maior que a mão (arpejado) e seis
@@ -239,7 +243,7 @@ fn desafios() -> Partitura {
     for n in ["G3", "C4", "E4", "G4", "B4", "D5"] {
         notas.push(nota(2.0, 2.0, n, Pauta::Superior, 0.6));
     }
-    Partitura { titulo: "Desafios: acorde largo e seis notas numa pauta".into(), notas, andamentos: vec![(0.0, 60.0)], pedais: vec![], compassos: vec![(0.0, 4, 4)], inicios_compasso: vec![] }
+    Partitura { titulo: "Desafios: acorde largo e seis notas numa pauta".into(), notas, andamentos: vec![(0.0, 60.0)], compassos: vec![(0.0, 4, 4)], ..Partitura::default() }
 }
 
 #[cfg(test)]

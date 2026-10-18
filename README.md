@@ -57,12 +57,16 @@ Variações úteis:
     ./target/release/piano --musicxml exemplos/ode.musicxml --humanizar 0      # tempos exatos
     ./target/release/piano --musicxml exemplos/ode.musicxml --render ode.wav   # grava WAV, sem placa de som
 
-Qualquer arquivo `.musicxml` não comprimido funciona, dentro do recorte
-descrito em [MusicXML](#musicxml).
+Qualquer arquivo `.musicxml`, `.xml` ou `.mxl` funciona, dentro do recorte
+descrito em [MusicXML](#musicxml). O exemplo `exemplos/pedais.musicxml` usa
+os três pedais (una corda e sustain em pp, depois o sostenuto segurando um
+Dó grave enquanto a direita toca staccato):
+
+    ./target/release/piano --gui --musicxml exemplos/pedais.musicxml
 
 ## Interface: piano roll
 
-![Piano roll com a partitura compacta: notas que soam em dourado nas duas vistas, dedo de cada nota, inspetor, velocity e sustain](docs/piano-roll.png)
+![Piano roll com a partitura compacta: notas que soam em dourado nas duas vistas, dedo de cada nota, inspetor, luzes dos pedais, velocity e as faixas dos três pedais](docs/piano-roll.png)
 
     ./target/release/piano --gui                               # abre exemplos/ode.musicxml
     ./target/release/piano --gui --musicxml arq.musicxml       # qualquer MusicXML
@@ -72,8 +76,8 @@ Visualizador temporal da partitura tocada pelo player, inspirado no piano
 roll de DAWs, em [Slint](https://slint.dev):
 
 - barra superior: abrir, tocar, pausar, parar, andamento, posição (compasso e
-  tempo), fórmula de compasso, zoom, grade, legenda de cores, cores por voz
-  ou por mão, modelo de corda;
+  tempo), fórmula de compasso, zoom, grade, luzes dos três pedais, legenda
+  de cores, cores por voz ou por mão, modelo de corda;
 - régua de compassos (clique para ir para aquele ponto);
 - teclado vertical das 88 teclas (as que soam ficam douradas);
 - roll: cada nota com a cor da voz (ou da mão) e o dedo escolhido pelo
@@ -81,7 +85,21 @@ roll de DAWs, em [Slint](https://slint.dev):
   dourado;
 - inspetor: nota, frequência, compasso, duração, voz, mão, dedo, velocity;
 - áudio: escolha da saída (placa de som) e volume de 0 a 150%;
-- faixas de velocity (força tocada pelo player) e de sustain.
+- faixas de velocity (força tocada pelo player) e dos três pedais.
+
+**O pé, ao vivo e no tempo.** As luzes **Sustain**, **Sostenuto** e **Una
+corda** na barra superior acendem enquanto o pedal está abaixado e enchem
+conforme a profundidade (o número aparece no meio pedal). Com áudio, elas
+mostram o estado do próprio instrumento (o motor publica a posição dos
+pedais a cada bloco), não o plano do player; sem áudio, mostram o plano. Os
+rótulos das três faixas no pé da tela acendem junto. Em cada faixa, uma
+barra é uma pisada, desenhada nos instantes reais em que o pé abaixa e
+solta (com o atraso do pedal sincopado, a antecipação do una corda e o
+ritardando); a opacidade segue a profundidade. Clicar numa barra mostra no
+inspetor qual pedal, quando abaixa e solta (compasso, tempo e segundos),
+duração, profundidade, se veio da partitura ou do pé e o efeito no piano.
+
+![Os três pedais: una corda e sustain acesos na barra no compasso 1, a faixa do sostenuto nos compassos 3 e 4](docs/pedais.png)
 
 | gesto                 | efeito                                 |
 |-----------------------|----------------------------------------|
@@ -92,7 +110,8 @@ roll de DAWs, em [Slint](https://slint.dev):
 | Ctrl + Shift + roda   | altura das linhas das teclas           |
 | clique na régua       | ir para o ponto (tocando ou não)       |
 | clique numa nota      | detalhes no inspetor                   |
-| botão Abrir           | escolher um `.musicxml`/`.xml` e tocar |
+| clique num pedal      | qual pedal, como e quando, no inspetor |
+| botão Abrir           | escolher um `.musicxml`/`.xml`/`.mxl` e tocar |
 | Áudio, Saída          | trocar a placa de som (pausa; Tocar continua dali) |
 | Áudio, Volume         | volume geral, na hora                  |
 
@@ -272,7 +291,10 @@ Leitor simplificado de MusicXML 4.0 (`src/musicxml.rs`). Entende:
 - ligaduras de prolongamento (`tie` start/stop): viram uma nota só;
 - andamento (`sound tempo`), dinâmicas (`pppp` a `ffff`), crescendo e
   diminuendo graduais (`wedge`, interpolando até a dinâmica seguinte) e
-  pedal de sustain (`pedal` start/stop/change);
+  pedal de sustain (`pedal` start/stop/change), sostenuto (`pedal`
+  sostenuto até o stop seguinte, se o sustain não estiver abaixado) e una
+  corda (texto `una corda` ou `u.c.` até `tre corde`, `tutte le corde` ou
+  `t.c.`);
 - articulações: `staccato`, `staccatissimo`, `accent`, `tenuto` e
   `fermata`;
 - dedilhado escrito (`technical/fingering`, 1 a 5): o player o segue.
@@ -318,14 +340,19 @@ entre os dois só passam eventos.
    a nota inteira e o resto em legato; acento soma força; fermata alonga a
    nota. O dedilhado escrito na partitura é seguido (contrariá-lo custa
    caro no modelo de Parncutt, mas um dedo impossível ainda é trocado).
-6. **Pé** (`--pe`): `partitura` executa as marcações de pedal, abaixando
-   60 ms depois do tempo (pedal sincopado); `automatico` decide sozinho:
+6. **Pé** (`--pe`), nos três pedais: `partitura` executa as marcações
+   (sustain e sostenuto abaixam 60 ms depois do tempo, pedal sincopado;
+   o una corda desce 40 ms antes das notas, porque a mecânica precisa
+   estar deslocada quando o martelo sai); `automatico` decide sozinho o
+   sustain e o una corda (este nos trechos em pp ou mais suave). Para o
+   sustain:
    acumula as classes de notas da harmonia (da pauta de baixo, se houver)
    enquanto elas cabem num acorde conhecido (tríades, sétimas, sus, com
    quintas e baixos repetidos de baixo de Alberti) e troca o pedal quando a
-   harmonia muda ou o baixo muda num tempo forte; solta no silêncio. `auto`
-   (padrão) usa as marcações quando a partitura as tem e decide sozinho
-   quando não; `nenhum` não pedala.
+   harmonia muda ou o baixo muda num tempo forte; solta no silêncio. O
+   sostenuto só vem da partitura. `auto` (padrão) usa, em cada pedal, as
+   marcações quando a partitura as tem e decide sozinho quando não;
+   `nenhum` não pedala.
 
 ## Pedais
 
@@ -497,8 +524,9 @@ feitas durante o desenvolvimento.
   saltos grandes.
 - **Pé automático simples:** reconhece acordes por modelo (sem tonalidade
   nem condução de vozes), não faz meio pedal nem pedal de efeito, e em
-  passagens cromáticas ou muito rápidas tende a soltar cedo. Sem una corda
-  e sostenuto vindos da partitura.
+  passagens cromáticas ou muito rápidas tende a soltar cedo. O una corda
+  automático olha só a dinâmica escrita (pp ou menos); sostenuto
+  automático não existe. Todas as pisadas são no fundo (100%).
 - **Interpretação:** a humanização é por regras fixas (adiantar a melodia,
   acentos métricos, ritardando final); não há fraseado (respiração no fim
   das frases), rubato nem dinâmica pela forma da melodia.
@@ -524,6 +552,9 @@ feitas durante o desenvolvimento.
 - **Tempo em semínimas (f64):** quiálteras e divisões complexas do MusicXML
   ficam com arredondamento; uma representação racional (ticks) seria mais
   exata.
+- **Barra superior apertada:** em 1400 px de largura o título da peça
+  aparece abreviado (está completo no título da janela); abaixo disso os
+  botões da direita podem sair da tela.
 - **Notas escritas, não tocadas:** o roll mostra a posição escrita; a
   humanização do player (alguns ms) não aparece.
 - **Obras muito grandes:** os modelos do Slint são refeitos quando algo

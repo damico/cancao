@@ -60,9 +60,14 @@ export struct BarraVis {
     selecionada: bool,
 }
 
+// uma pisada de pedal na sua faixa (0 sustain, 1 sostenuto, 2 una corda)
 export struct FaixaVis {
+    id: int,
     x: length,
     w: length,
+    linha: int,
+    nivel: float,
+    selecionada: bool,
 }
 
 // um sistema da partitura tradicional já rasterizado, na posição da tela
@@ -127,13 +132,45 @@ component Botao inherits Rectangle {
     }
 }
 
+// cor de cada pedal: sustain, sostenuto, una corda
+global Pedais {
+    out property <[color]> cores: [#4f86c6, #5fae6a, #a77bd0];
+    out property <[string]> nomes: ["Sustain", "Sostenuto", "Una corda"];
+}
+
+// luz de um pedal na barra: acende e enche com a profundidade (0..1); o
+// número só aparece no meio pedal
+component LuzPedal inherits Rectangle {
+    in property <int> pedal;
+    in property <float> nivel;
+    height: 30px;
+    width: 74px;
+    border-radius: 4px;
+    border-width: 1px;
+    border-color: nivel > 0 ? Pedais.cores[pedal] : #45474e;
+    background: #2b2c30;
+    clip: true;
+    Rectangle {
+        x: 0px;
+        width: parent.width * nivel;
+        background: Pedais.cores[pedal].with-alpha(0.55);
+    }
+    Text {
+        text: nivel > 0 && nivel < 1 ? Pedais.nomes[pedal] + " " + Math.round(nivel * 100) + "%" : Pedais.nomes[pedal];
+        color: nivel > 0 ? #ffffff : #8a8c92;
+        font-size: 11px;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
 component Info inherits Text {
     color: #b8bac0;
     vertical-alignment: center;
 }
 
 export component PianoRoll inherits Window {
-    title: "cancao - piano roll";
+    title: "cancao - " + root.titulo;
     preferred-width: 1400px;
     preferred-height: 860px;
     min-width: 900px;
@@ -150,7 +187,7 @@ export component PianoRoll inherits Window {
     in property <string> modelo;
     in property <string> modo-cor;
     in property <bool> tocando;
-    in property <string> info: "Clique numa nota para ver os detalhes.";
+    in property <string> info: "Clique numa nota ou num pedal para ver os detalhes.";
     in property <string> mensagem;
     in property <[LegendaVis]> legenda;
     in property <[NotaVis]> notas;
@@ -159,6 +196,8 @@ export component PianoRoll inherits Window {
     in property <[TeclaVis]> teclas;
     in property <[BarraVis]> barras;
     in property <[FaixaVis]> pedais;
+    // posição de cada pedal agora (sustain, sostenuto, una corda), 0..1
+    in property <[float]> pe-agora: [0, 0, 0];
     // painel da partitura tradicional (Live Score Panel)
     // modo: 0 = oculto, 1 = compacto, 2 = expandido, 3 = tela cheia
     in-out property <int> modo-partitura: 1;
@@ -202,6 +241,7 @@ export component PianoRoll inherits Window {
     callback clicar-nota(int);
     callback clicar-regua(length);
     callback clicar-fundo();
+    callback clicar-pedal(int);
     callback escolher-dispositivo(string);
     callback mudar-volume(float);
     callback clicar-partitura(int);
@@ -242,6 +282,9 @@ export component PianoRoll inherits Window {
                     font-size: 15px;
                     font-weight: 700;
                     vertical-alignment: center;
+                    overflow: elide;
+                    min-width: 60px;
+                    horizontal-stretch: 1;
                 }
                 Info { text: root.bpm + " BPM"; }
                 Info { text: root.posicao; font-family: "monospace"; }
@@ -251,14 +294,19 @@ export component PianoRoll inherits Window {
                     min-width: 30px;
                     clicado => { root.zoom-menos(); }
                 }
-                Info { text: "Zoom " + root.zoom; }
+                Info { text: root.zoom; }
                 Botao {
                     texto: "+";
                     min-width: 30px;
                     clicado => { root.zoom-mais(); }
                 }
                 Info { text: "Grade " + root.grade; }
-                Rectangle { horizontal-stretch: 1; }
+                // o pé: os três pedais agora
+                Rectangle { width: 4px; }
+                for i in 3: LuzPedal {
+                    pedal: i;
+                    nivel: root.pe-agora[i];
+                }
                 for l in root.legenda: HorizontalLayout {
                     spacing: 4px;
                     alignment: center;
@@ -624,9 +672,9 @@ export component PianoRoll inherits Window {
             }
         }
 
-        // painel inferior: velocity e sustain
+        // painel inferior: velocity e os três pedais
         HorizontalLayout {
-            height: 132px;
+            height: 150px;
             VerticalLayout {
                 width: 64px;
                 Rectangle {
@@ -638,13 +686,23 @@ export component PianoRoll inherits Window {
                         font-size: 11px;
                     }
                 }
-                Rectangle {
-                    height: 36px;
-                    background: #26272b;
+                // rótulo de cada faixa, aceso enquanto o pedal está abaixado
+                for i in 3: Rectangle {
+                    height: 18px;
+                    background: root.pe-agora[i] > 0 ? Pedais.cores[i].with-alpha(0.35) : #26272b;
+                    Rectangle {
+                        x: 4px;
+                        width: 6px;
+                        height: 6px;
+                        border-radius: 3px;
+                        background: Pedais.cores[i];
+                    }
                     Text {
-                        text: "Sustain";
-                        color: #b8bac0;
-                        font-size: 11px;
+                        x: 14px;
+                        text: Pedais.nomes[i];
+                        color: root.pe-agora[i] > 0 ? #ffffff : #b8bac0;
+                        font-size: 10px;
+                        vertical-alignment: center;
                     }
                 }
             }
@@ -682,16 +740,26 @@ export component PianoRoll inherits Window {
                     }
                 }
                 Rectangle {
-                    height: 36px;
+                    height: 54px;
                     background: #1a1b1e;
                     clip: true;
+                    for i in 3: Rectangle {
+                        y: i * 18px + 17px;
+                        height: 1px;
+                        background: #26272b;
+                    }
                     for p in root.pedais: Rectangle {
                         x: p.x;
-                        y: 9px;
+                        y: p.linha * 18px + 3px;
                         width: p.w;
-                        height: 18px;
+                        height: 12px;
                         border-radius: 3px;
-                        background: #3f6fa8;
+                        background: Pedais.cores[p.linha].with-alpha(0.3 + 0.6 * p.nivel);
+                        border-width: p.selecionada ? 1px : 0px;
+                        border-color: #ffffff;
+                        TouchArea {
+                            clicked => { root.clicar-pedal(p.id); }
+                        }
                     }
                     if root.playhead-visivel: Rectangle {
                         x: root.playhead-x - 1px;

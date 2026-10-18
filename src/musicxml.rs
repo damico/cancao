@@ -25,8 +25,10 @@
 //! - `voice` (vozes do contraponto) e fórmula de compasso (`time`);
 //! - ligaduras de prolongamento (`tie` start/stop): as notas viram uma só;
 //! - andamento (`sound tempo`), dinâmicas (`pppp` a `ffff`), crescendo e
-//!   diminuendo (`wedge`, interpolando até a dinâmica seguinte) e pedal de
-//!   sustain (`pedal` start/stop/change);
+//!   diminuendo (`wedge`, interpolando até a dinâmica seguinte), pedal de
+//!   sustain (`pedal` start/stop/change), sostenuto (`pedal` sostenuto, até
+//!   o stop seguinte) e una corda (texto "una corda" ou "u.c." até "tre
+//!   corde", "tutte le corde" ou "t.c.");
 //! - articulações (staccato, staccatissimo, acento, tenuto, fermata) e
 //!   dedilhado escrito (`fingering`);
 //! - o formato comprimido `.mxl` (um ZIP com o MusicXML dentro).
@@ -90,6 +92,18 @@ fn numero(n: Node, nome: &str) -> Option<f64> {
 }
 
 /// Dinâmica escrita para a força 0..1.
+/// Texto de una corda: Some(true) abaixa, Some(false) solta.
+fn una_corda(texto: &str) -> Option<bool> {
+    let t = texto.trim().to_lowercase();
+    if t.contains("una corda") || t == "u.c." {
+        Some(true)
+    } else if t.contains("tre corde") || t.contains("tutte le corde") || t == "t.c." {
+        Some(false)
+    } else {
+        None
+    }
+}
+
 fn dinamica(nome: &str) -> Option<f32> {
     Some(match nome {
         "pppp" => 0.10,
@@ -180,6 +194,8 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
         let mut inicio_ultima = 0.0;
         let mut forca = 0.55; // mf até aparecer outra dinâmica
         let mut pedal_desde: Option<f64> = None;
+        let mut sostenuto_desde: Option<f64> = None;
+        let mut una_corda_desde: Option<f64> = None;
         // para os crescendos: as dinâmicas marcadas e os trechos com cunha
         let primeira_nota = p.notas.len();
         let mut marcas: Vec<(f64, f32)> = Vec::new();
@@ -250,6 +266,13 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
                                 };
                                 match ped.attribute("type") {
                                     Some("start") => pedal_desde = Some(cursor),
+                                    Some("sostenuto") => sostenuto_desde = Some(cursor),
+                                    // o stop fecha o sostenuto só se o sustain não estiver abaixado
+                                    Some("stop") if pedal_desde.is_none() => {
+                                        if let Some(d) = sostenuto_desde.take() {
+                                            p.sostenuto.push((d, cursor));
+                                        }
+                                    }
                                     Some("stop") => {
                                         fecha(pedal_desde, &mut p);
                                         pedal_desde = None;
@@ -259,6 +282,17 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
                                         pedal_desde = Some(cursor);
                                     }
                                     _ => {}
+                                }
+                            }
+                            if let Some(w) = texto_de(tipo, "words") {
+                                match una_corda(&w) {
+                                    Some(true) => una_corda_desde = una_corda_desde.or(Some(cursor)),
+                                    Some(false) => {
+                                        if let Some(d) = una_corda_desde.take() {
+                                            p.una_corda.push((d, cursor));
+                                        }
+                                    }
+                                    None => {}
                                 }
                             }
                         }
@@ -324,6 +358,12 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
         if let Some(d) = pedal_desde {
             p.pedais.push((d, cursor)); // pedal não solto até o fim
         }
+        if let Some(d) = sostenuto_desde {
+            p.sostenuto.push((d, cursor));
+        }
+        if let Some(d) = una_corda_desde {
+            p.una_corda.push((d, cursor));
+        }
         aplicar_cunhas(&mut p.notas[primeira_nota..], &marcas, &cunhas);
     }
     p.notas.sort_by(|a, b| a.inicio.total_cmp(&b.inicio).then(a.tecla.cmp(&b.tecla)));
@@ -380,6 +420,25 @@ mod testes {
         assert_eq!(forca_em(0.0), 0.55); // mf
         assert_eq!(forca_em(16.0), 0.35); // p no compasso 5
         assert_eq!(forca_em(24.0), 0.70); // f no compasso 7
+    }
+
+    #[test]
+    fn sostenuto_e_una_corda() {
+        let nota = r#"<note><pitch><step>C</step><octave>4</octave></pitch><duration>1</duration></note>"#;
+        let dir = |x: &str| format!("<direction><direction-type>{x}</direction-type></direction>");
+        let xml = format!(
+            r#"<score-partwise version="4.0"><part id="P1"><measure number="1">
+            <attributes><divisions>1</divisions></attributes>
+            {}{}{nota}{nota}{}{nota}{}{nota}</measure></part></score-partwise>"#,
+            dir("<words>una corda</words>"),
+            dir(r#"<pedal type="sostenuto"/>"#),
+            dir(r#"<pedal type="stop"/>"#),
+            dir("<words>tre corde</words>"),
+        );
+        let p = de_texto(&xml).unwrap();
+        assert_eq!(p.sostenuto, [(0.0, 2.0)]);
+        assert_eq!(p.una_corda, [(0.0, 3.0)]);
+        assert!(p.pedais.is_empty());
     }
 
     #[test]

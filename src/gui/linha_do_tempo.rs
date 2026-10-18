@@ -25,7 +25,8 @@
 use crate::corda::{self, NUM_TECLAS};
 use crate::dedilhado::{self, Mao};
 use crate::partitura::Partitura;
-use crate::player::NotaTocada;
+use crate::eventos::Pedal;
+use crate::player::{NotaTocada, Pisada, RelogioExecucao};
 
 pub const ZOOM_PADRAO: f64 = 60.0; // px por semínima = 100%
 const ZOOM_MIN: f64 = 6.0;
@@ -284,14 +285,74 @@ pub fn teclas_visiveis(v: &Vista) -> Vec<TeclaDesenho> {
         .collect()
 }
 
-/// Trechos de pedal de sustain visíveis: (x, largura).
-pub fn pedais_visiveis(v: &Vista, pedais: &[(f64, f64)]) -> Vec<(f64, f64)> {
+/// Uma pisada visível na faixa do seu pedal.
+pub struct PisadaDesenho {
+    /// índice em `Execucao::pedais`
+    pub indice: usize,
+    /// 0 sustain, 1 sostenuto, 2 una corda
+    pub linha: usize,
+    pub x: f64,
+    pub w: f64,
+    pub valor: f32,
+}
+
+/// Pisadas visíveis, nos instantes em que o pé de fato abaixa e solta
+/// (com o atraso do pedal sincopado e o ritardando).
+pub fn pedais_visiveis(v: &Vista, pedais: &[Pisada], relogio: &RelogioExecucao) -> Vec<PisadaDesenho> {
     let (t0, t1) = v.tempos();
     pedais
         .iter()
-        .filter(|(a, s)| *a <= t1 && *s >= t0)
-        .map(|&(a, s)| (v.x(a), ((s - a) * v.px_tempo - 2.0).max(1.0)))
+        .enumerate()
+        .map(|(i, d)| (i, d, relogio.tempo_em(d.abaixa_s), relogio.tempo_em(d.solta_s)))
+        .filter(|&(_, _, a, s)| a <= t1 && s >= t0)
+        .map(|(indice, d, a, s)| PisadaDesenho { indice, linha: d.pedal as usize, x: v.x(a), w: ((s - a) * v.px_tempo - 2.0).max(1.0), valor: d.valor })
         .collect()
+}
+
+/// Posição planejada de cada pedal (sustain, sostenuto, una corda) no
+/// instante `s` da execução.
+pub fn pedais_em(pedais: &[Pisada], s: f64) -> [f32; 3] {
+    let mut v = [0f32; 3];
+    for d in pedais.iter().filter(|d| d.abaixa_s <= s && s < d.solta_s) {
+        v[d.pedal as usize] = v[d.pedal as usize].max(d.valor);
+    }
+    v
+}
+
+pub fn nome_pedal(p: Pedal) -> &'static str {
+    match p {
+        Pedal::Sustain => "Sustain",
+        Pedal::Sostenuto => "Sostenuto",
+        Pedal::UnaCorda => "Una corda",
+    }
+}
+
+/// Texto do inspetor para uma pisada: qual pedal, como e quando.
+pub fn descrever_pisada(p: &Partitura, d: &Pisada, relogio: &RelogioExecucao) -> String {
+    let (pe, efeito) = match d.pedal {
+        Pedal::Sustain => ("direito", "levanta todos os abafadores"),
+        Pedal::Sostenuto => ("do meio", "segura os abafadores já levantados quando desce"),
+        Pedal::UnaCorda => ("esquerdo", "o martelo acerta uma corda a menos"),
+    };
+    let quando = |s: f64| {
+        let (compasso, tempo) = p.compasso_e_tempo(relogio.tempo_em(s));
+        format!("compasso {compasso}, tempo {} ({s:.2} s)", formatar((tempo * 100.0).round() / 100.0))
+    };
+    let profundidade = match d.valor {
+        v if v >= 0.75 => "no fundo",
+        v if v > 0.25 => "meio pedal",
+        _ => "raso",
+    };
+    let s = format!(
+        "{} (pedal {pe})\nAbaixa: {}\nSolta: {}\nDuração: {:.2} s\nProfundidade: {:.0}% ({profundidade})\n{}\nEfeito: {efeito}",
+        nome_pedal(d.pedal),
+        quando(d.abaixa_s),
+        quando(d.solta_s),
+        d.solta_s - d.abaixa_s,
+        d.valor * 100.0,
+        if d.automatica { "Decidido pelo pé" } else { "Marcado na partitura" },
+    );
+    s.replace('.', ",")
 }
 
 /// Cor de uma voz (contraponto). Paleta distinguível em fundo escuro.
@@ -355,6 +416,28 @@ mod testes {
 
     fn vista() -> Vista {
         Vista { inicio: 0.0, px_tempo: 50.0, topo: 0.0, px_tecla: 10.0, largura: 500.0, altura: 300.0 }
+    }
+
+    #[test]
+    fn tres_pedais_na_faixa_no_estado_e_no_inspetor() {
+        let mut p = exemplo("acordes").unwrap();
+        p.sostenuto = vec![(2.0, 4.0)];
+        p.una_corda = vec![(0.0, 2.0)];
+        let e = crate::player::Player { humanizacao: 0.0, ..Default::default() }.tocar(&p, 48000);
+        let faixas = pedais_visiveis(&vista(), &e.pedais, &e.relogio);
+        for linha in 0..3 {
+            assert!(faixas.iter().any(|d| d.linha == linha), "faixa {linha}");
+        }
+        // no meio do 1º acorde: sustain e una corda; no 2º: sustain e sostenuto
+        let meio = |t: f64| e.relogio.segundos(t);
+        assert_eq!(pedais_em(&e.pedais, meio(1.0)), [1.0, 0.0, 1.0]);
+        assert_eq!(pedais_em(&e.pedais, meio(3.0)), [1.0, 1.0, 0.0]);
+        let so = e.pedais.iter().find(|d| d.pedal == Pedal::Sostenuto).unwrap();
+        let texto = descrever_pisada(&p, so, &e.relogio);
+        assert!(texto.starts_with("Sostenuto (pedal do meio)"), "{texto}");
+        assert!(texto.contains("Abaixa: compasso 1, tempo 3,07"), "{texto}");
+        assert!(texto.contains("Profundidade: 100% (no fundo)"), "{texto}");
+        assert!(texto.contains("Marcado na partitura"), "{texto}");
     }
 
     #[test]
