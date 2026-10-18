@@ -75,15 +75,18 @@ Dó grave enquanto a direita toca staccato):
 Visualizador temporal da partitura tocada pelo player, inspirado no piano
 roll de DAWs, em [Slint](https://slint.dev):
 
-- barra superior: abrir, acervo, tocar, pausar, parar, andamento, posição (compasso e
-  tempo), fórmula de compasso, zoom, grade, luzes dos três pedais, legenda
-  de cores, cores por voz ou por mão, modelo de corda;
+- barra superior: ícones pequenos para abrir, acervo, tocar, pausar,
+  parar, zoom, cores por voz ou por mão e modelo de corda (o nome de cada
+  ícone aparece na barra ao passar o mouse), andamento, posição (compasso e
+  tempo), fórmula de compasso, grade, luzes dos três pedais e legenda de
+  cores;
 - régua de compassos (clique para ir para aquele ponto);
 - teclado vertical das 88 teclas (as que soam ficam douradas);
 - roll: cada nota com a cor da voz (ou da mão) e o dedo escolhido pelo
   player; as já tocadas ficam apagadas, as que soam brilham; playhead
   dourado;
-- coluna da direita em abas: **Interpretação** (os quatro perfis do
+- coluna da direita, com o título da peça no topo e barra de rolagem
+  quando não cabe, em abas: **Interpretação** (os quatro perfis do
   [motor de expressão](#motor-de-expressão-e-emoção-percebida) e o plano
   Valência x Ativação), **Nota** (inspetor: nota, frequência, compasso,
   duração, voz, mão, dedo, velocity; abre sozinha ao clicar numa nota ou
@@ -116,11 +119,11 @@ duração, profundidade, se veio da partitura ou do pé e o efeito no piano.
 | clique numa nota      | detalhes no inspetor                   |
 | clique num pedal      | qual pedal, como e quando, no inspetor |
 | Interpretação         | trocar o perfil (continua do mesmo ponto da partitura) |
-| botão Abrir           | escolher um `.musicxml`/`.xml`/`.mxl` e tocar |
+| ícone Abrir (pasta)   | escolher um `.musicxml`/`.xml`/`.mxl` e tocar |
 | Áudio, Saída          | trocar a placa de som (pausa; Tocar continua dali) |
 | Áudio, Volume         | volume geral, na hora                  |
 
-O botão **Abrir** usa o diálogo de arquivos do sistema (no Linux, o do
+O ícone **Abrir** (a pasta) usa o diálogo de arquivos do sistema (no Linux, o do
 `xdg-desktop-portal`, que o Ubuntu já traz; no macOS, o nativo). A peça
 aberta passa pelo player e começa a tocar; se o arquivo não puder ser lido,
 a peça atual continua e o erro aparece no painel inferior direito.
@@ -144,13 +147,17 @@ ligaduras, pausas, dinâmicas, articulações), gravada pelo
 [Verovio](https://www.verovio.org) a partir do mesmo MusicXML e sincronizada
 com o mesmo relógio do motor de áudio:
 
-- **Ocultar / Compacto / Expandir / Tela cheia**: o compacto mostra o
+Os botões da barra da partitura são ícones (o nome aparece ao passar o
+mouse):
+
+- **Ocultar / Compacto / Expandir / Tela cheia** (uma moldura vazia, com um
+  terço, com dois terços e cheia): o compacto mostra o
   sistema atual; o expandido, vários (arraste a divisória para ajustar); a
   tela cheia esconde o piano roll. Trocar de modo nunca interrompe o som.
-- **Seguir execução**: a partitura acompanha o playhead sistema a sistema,
+- **Seguir execução** (um alvo): a partitura acompanha o playhead sistema a sistema,
   mostrando o próximo antes de a linha acabar; também segue os saltos. Um
   cursor dourado anda pela partitura entre as colunas de notas.
-- **Alinhar ao tempo** (liga/desliga): a partitura vira uma tira alinhada ao
+- **Alinhar ao tempo** (um relógio; liga/desliga): a partitura vira uma tira alinhada ao
   piano roll, com a mesma régua de tempo, o mesmo zoom e a mesma rolagem:
   cada nota fica exatamente acima da sua barra no roll e o cursor da
   partitura continua o playhead na mesma reta. As cabeças de nota ficam em
