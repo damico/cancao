@@ -31,8 +31,8 @@
 //! - um passa-tudo de atraso fracionário: `taxa / f` raramente é inteiro,
 //!   e ele completa o atraso para a afinação ficar exata.
 //!
-//! O martelo injeta um pulso de força a 1/8 do comprimento. A onda que vai
-//! para a ponta mais próxima volta invertida e atrasada, e isso apaga
+//! O martelo (ver [`crate::martelo`]) bate a 1/8 do comprimento. A onda que
+//! vai para a ponta mais próxima volta invertida e atrasada, e isso apaga
 //! sozinho os harmônicos múltiplos de 8, sem fórmula.
 //!
 //! Rigidez (etapa 2): num fio de aço, as frequências altas viajam mais rápido
@@ -41,19 +41,19 @@
 //! frequência: os agudos dão a volta mais depressa. O número de seções e o
 //! coeficiente são escolhidos por tecla para os parciais caírem em f_n.
 //!
-//! Ainda sem martelo não linear (etapa 3) e sem acoplamento das cordas no
-//! cavalete (etapa 4).
+//! Ainda sem acoplamento das cordas no cavalete (etapa 4).
 
 use std::f32::consts::PI;
 
 use crate::corda::Corda;
+use crate::martelo::{self, MAX_GOLPE};
 use crate::modal::tau_base;
 use crate::synth::{BLOCO, DESAFINO_UNISSONO, MAX_UNISSONO, POS_MARTELO, SIMPATIA_UNA_CORDA, TAU_ABAFADO};
 
 /// Atraso máximo de uma volta: A0 a 48 kHz precisa de ~1745 amostras.
 const MAX_ATRASO: usize = 2048;
-/// Pulso do martelo (até ~4 ms) mais a reflexão (até ~1/8 da volta).
-const MAX_EXCITACAO: usize = 1024;
+/// Golpe do martelo mais a reflexão (até ~1/8 da volta).
+const MAX_EXCITACAO: usize = MAX_GOLPE + MAX_ATRASO / 4;
 /// Seções do filtro de dispersão.
 pub const MAX_DISPERSAO: usize = 32;
 /// Parciais acima disto não entram no projeto da dispersão (nos agudos o
@@ -219,6 +219,30 @@ fn ajustar_perdas(f: f32, tau0: f32, taxa: f32) -> (f32, f32) {
     (a, g)
 }
 
+/// Nos agudos o contato do martelo dura mais que uma volta da corda, e a
+/// maior parte da força cai entre os parciais: na corda essa parte se cancela
+/// nas primeiras voltas, mas antes aparece como um estalo, que a normalização
+/// do volume amplificaria muito (no C8 só ~0,3% da energia do golpe cai nos
+/// parciais). Dobrar o golpe numa volta, somando os trechos deslocados de
+/// período em período, faz esse cancelamento antes: o som sustentado é o
+/// mesmo, sem o estalo.
+fn dobrar_numa_volta(exc: &mut [f32; MAX_EXCITACAO], len: &mut usize, periodo: f32) {
+    let original = *exc;
+    let n = periodo.ceil() as usize;
+    exc.fill(0.0);
+    for (i, e) in exc[..n].iter_mut().enumerate() {
+        // soma x(i + m*periodo), com interpolação linear no período fracionário
+        let mut t = i as f32;
+        while t < *len as f32 {
+            let (k, frac) = (t as usize, t.fract());
+            let prox = if k + 1 < *len { original[k + 1] } else { 0.0 };
+            *e += original[k] * (1.0 - frac) + prox * frac;
+            t += periodo;
+        }
+    }
+    *len = n;
+}
+
 #[derive(Clone, Copy)]
 pub struct VozGuia {
     linhas: [Linha; MAX_UNISSONO],
@@ -297,45 +321,27 @@ impl VozGuia {
             v.golpe[u] = if u < atingidas { 1.0 } else { SIMPATIA_UNA_CORDA };
         }
 
-        // martelo: pulso de força de ~4 ms no A0 a ~0,5 ms no C8; mais curto
-        // quando mais forte (feltro comprimido = mais duro = mais brilho);
-        // com una corda bate com feltro mais macio
-        let contato_s = 4e-3 * (f / 27.5).powf(-0.414) * (1.3 - 0.6 * vel) * (1.0 + 0.4 * una_corda);
-        let n_pulso = ((contato_s * taxa) as usize).clamp(2, MAX_EXCITACAO / 2);
+        // martelo: a força sai da simulação do feltro contra a corda
+        let mut forca = [0f32; MAX_GOLPE];
+        let n_golpe = martelo::golpe(c, atingidas, vel, una_corda, taxa, &mut forca);
         let periodo = taxa / f;
         // a reflexão na ponta mais próxima do martelo volta invertida, depois
         // de percorrer 2 × (posição do martelo) = POS_MARTELO de uma volta
-        let reflexo = ((POS_MARTELO * periodo).round() as usize).clamp(1, MAX_EXCITACAO / 2);
-        v.len_exc = n_pulso + reflexo;
-        for i in 0..n_pulso {
-            let p = 0.5 * (1.0 - (2.0 * PI * i as f32 / n_pulso as f32).cos());
+        let reflexo = ((POS_MARTELO * periodo).round() as usize).clamp(1, MAX_EXCITACAO - MAX_GOLPE);
+        v.len_exc = n_golpe + reflexo;
+        for (i, &p) in forca[..n_golpe].iter().enumerate() {
             v.excitacao[i] += p;
             v.excitacao[i + reflexo] -= p;
         }
 
+        if v.len_exc as f32 > periodo {
+            dobrar_numa_volta(&mut v.excitacao, &mut v.len_exc, periodo);
+        }
+
         // volume: a corda repete a excitação a cada volta, como um sinal
-        // periódico. Para uma soma de senoides, Σ amplitude² = 2 × potência,
-        // a mesma normalização do modal
-        let exc = &v.excitacao[..v.len_exc];
-        let potencia = if (v.len_exc as f32) <= periodo {
-            // a excitação cabe numa volta: potência = energia / período (Parseval)
-            exc.iter().map(|x| x * x).sum::<f32>() / periodo
-        } else {
-            // agudos: o golpe dura mais que uma volta e se sobrepõe a si mesmo;
-            // soma a potência dos harmônicos verdadeiros (poucos nos agudos)
-            let mut p = 0f32;
-            let mut k = 1;
-            while k as f32 * f < 0.5 * taxa {
-                let w = 2.0 * PI * k as f32 * f / taxa;
-                let (re, im) = exc.iter().enumerate().fold((0f32, 0f32), |(re, im), (i, &x)| {
-                    (re + x * (w * i as f32).cos(), im - x * (w * i as f32).sin())
-                });
-                // amplitude do harmônico k = 2 |E(ω_k)| / período
-                p += 2.0 * (re * re + im * im) / (periodo * periodo);
-                k += 1;
-            }
-            p
-        };
+        // periódico; potência = energia / período (Parseval). Para uma soma
+        // de senoides, Σ amplitude² = 2 × potência, a mesma normalização do modal
+        let potencia = v.excitacao[..v.len_exc].iter().map(|x| x * x).sum::<f32>() / periodo;
         let norm = if potencia > 0.0 { 1.0 / (2.0 * potencia).sqrt() / v.nu as f32 } else { 0.0 };
         for x in &mut v.excitacao[..v.len_exc] {
             *x *= ganho * norm;

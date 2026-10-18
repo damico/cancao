@@ -416,6 +416,21 @@ mod testes {
     }
 
     #[test]
+    fn una_corda_no_guia_de_onda() {
+        let tocar_acorde = |una: f32| {
+            let mut m = Motor::new(Synth::new(TAXA, 1.0, None).com_modelo(Modelo::Guia), TAXA);
+            pedal(&mut m, 0.0, Pedal::UnaCorda, una);
+            for k in [27, 34, 43, 51] {
+                on(&mut m, 0.01, k);
+            }
+            tocar(&mut m, 0.5)
+        };
+        let (normal, una) = (tocar_acorde(0.0), tocar_acorde(1.0));
+        let db = 20.0 * (rms(&una, 0.0, 0.5) / rms(&normal, 0.0, 0.5)).log10();
+        assert!((-8.0..-1.0).contains(&db), "una corda {db:.1} dB");
+    }
+
+    #[test]
     fn soltar_tudo_libera_teclas_e_pedais() {
         let mut m = motor();
         pedal(&mut m, 0.0, Pedal::Sustain, 1.0);

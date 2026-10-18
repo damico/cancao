@@ -18,10 +18,15 @@
 #[cfg(feature = "audio")]
 pub mod audio;
 pub mod corda;
+pub mod dedilhado;
 pub mod eventos;
 pub mod guia;
+pub mod martelo;
 pub mod modal;
 pub mod motor;
+pub mod musicxml;
+pub mod partitura;
+pub mod player;
 pub mod roteiro;
 pub mod synth;
 pub mod tampo;

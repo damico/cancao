@@ -207,8 +207,13 @@ impl Synth {
         let c = &self.cordas[tecla];
         let f = c.f as f32;
 
-        // compensa a perda de volume percebido nos agudos curtos
-        let brilho = if f > 440.0 { (f / 440.0).powf(0.4) } else { 1.0 };
+        // compensa a perda de volume percebido nos agudos curtos; o guia de
+        // onda decai mais devagar que o modal e precisa de menos compensação
+        let expoente = match self.modelo {
+            Modelo::Modal => 0.4,
+            Modelo::Guia => 0.2,
+        };
+        let brilho = if f > 440.0 { (f / 440.0).powf(expoente) } else { 1.0 };
         let ganho = 0.35 * vel.powf(1.6) * brilho;
         let corpo = match self.modelo {
             Modelo::Modal => Corpo::Modal(VozModal::new(c, vel, self.una_corda, ganho, taxa)),

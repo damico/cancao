@@ -24,6 +24,9 @@ use std::process::ExitCode;
 use cancao::corda::{self, NUM_TECLAS};
 use cancao::eventos::{Evento, EventoAgendado};
 use cancao::motor::Motor;
+use cancao::musicxml;
+use cancao::partitura;
+use cancao::player::Player;
 use cancao::roteiro::{self, Roteiro};
 use cancao::synth::{BLOCO, MAX_VOZES, Modelo, Synth};
 use cancao::tampo::Tampo;
@@ -45,6 +48,8 @@ enum Modo {
 
 #[derive(Clone, Copy, PartialEq)]
 enum QualRoteiro {
+    /// uma partitura tocada pelo player
+    Partitura,
     Teclas,
     Demo,
     Pedais,
@@ -54,6 +59,11 @@ enum QualRoteiro {
 struct Opcoes {
     modo: Modo,
     roteiro: Option<QualRoteiro>,
+    partitura: String,
+    /// arquivo MusicXML para o player tocar
+    musicxml: Option<PathBuf>,
+    /// humanização do player (0 = exato)
+    humanizar: f32,
     modelo: Modelo,
     wav: PathBuf,
     ir_entrada: Option<PathBuf>,
@@ -77,6 +87,10 @@ uso: piano [opções]
   --nota A4 [C#5 ...]   toca notas no dispositivo
   --demo                toca as 88 teclas em sequência
   --pedais              demonstração dos pedais sustain, una corda e sostenuto
+  --partitura nome      o player toca uma partitura de exemplo
+                        (escala, acordes, desafios), com mãos e dedos
+  --musicxml arq.musicxml  o player toca um arquivo MusicXML (simplificado)
+  --humanizar 0.5       variações humanas do player (0 = exato)
   --render saida.wav    grava num WAV em vez de tocar (padrão: as 88 teclas;
                         combina com --nota, --demo e --pedais)
   --bench               mede o tempo de síntese no pior caso (32 vozes)
@@ -97,6 +111,9 @@ fn ler_opcoes() -> Result<Opcoes, String> {
     let mut op = Opcoes {
         modo: Modo::Interativo,
         roteiro: None,
+        partitura: String::new(),
+        musicxml: None,
+        humanizar: 0.5,
         modelo: Modelo::Modal,
         wav: PathBuf::new(),
         ir_entrada: None,
@@ -117,6 +134,15 @@ fn ler_opcoes() -> Result<Opcoes, String> {
             "--tabela" => op.modo = Modo::Tabela,
             "--demo" => op.roteiro = Some(QualRoteiro::Demo),
             "--pedais" => op.roteiro = Some(QualRoteiro::Pedais),
+            "--partitura" => {
+                op.roteiro = Some(QualRoteiro::Partitura);
+                op.partitura = valor()?;
+            }
+            "--musicxml" => {
+                op.roteiro = Some(QualRoteiro::Partitura);
+                op.musicxml = Some(valor()?.into());
+            }
+            "--humanizar" => op.humanizar = valor()?.parse().map_err(|_| "--humanizar inválido")?,
             "--bench" => op.modo = Modo::Bench,
             "--listar" => op.modo = Modo::Listar,
             "--render" => {
@@ -163,8 +189,31 @@ fn ler_opcoes() -> Result<Opcoes, String> {
     Ok(op)
 }
 
-fn fazer_roteiro(op: &Opcoes) -> Roteiro {
+/// Textos do roteiro ficam um por linha (em vez de sobrescrever a linha)?
+fn marcos_em_linhas(op: &Opcoes) -> bool {
+    matches!(op.roteiro, Some(QualRoteiro::Pedais | QualRoteiro::Partitura))
+}
+
+/// O player toca a partitura; mostra o que ele precisou adaptar.
+fn tocar_partitura(op: &Opcoes) -> Result<Roteiro, String> {
+    let p = match &op.musicxml {
+        Some(arquivo) => musicxml::ler(arquivo)?,
+        None => partitura::exemplo(&op.partitura).ok_or_else(|| {
+            format!("partitura desconhecida: {} (exemplos: {})", op.partitura, partitura::EXEMPLOS.join(", "))
+        })?,
+    };
+    let player = Player { humanizacao: op.humanizar, ..Player::default() };
+    let e = player.tocar(&p, TAXA);
+    println!("{}  (humanização {})", p.titulo, op.humanizar);
+    for a in &e.avisos {
+        println!("  aviso: {a}");
+    }
+    Ok(e.roteiro)
+}
+
+fn fazer_roteiro(op: &Opcoes) -> Result<Roteiro, String> {
     let mut r = match op.roteiro.unwrap_or(QualRoteiro::Teclas) {
+        QualRoteiro::Partitura => tocar_partitura(op)?,
         QualRoteiro::Teclas => roteiro::teclas(TAXA),
         QualRoteiro::Pedais => roteiro::pedais(TAXA),
         QualRoteiro::Notas => roteiro::notas(TAXA, &op.notas, op.vel, 0.6, None, 3.0),
@@ -188,7 +237,7 @@ fn fazer_roteiro(op: &Opcoes) -> Roteiro {
             })
             .collect();
     }
-    r
+    Ok(r)
 }
 
 fn fazer_tampo(op: &Opcoes) -> Result<Option<Tampo>, String> {
@@ -234,7 +283,7 @@ fn imprimir_tabela(op: &Opcoes) {
 fn render_wav(op: &Opcoes) -> Result<(), String> {
     let mut m = fazer_motor(op)?;
     let tem_tampo = m.synth().tem_tampo();
-    let r = fazer_roteiro(op);
+    let r = fazer_roteiro(op)?;
     for e in r.a_partir_de(0) {
         m.agendar(e);
     }
@@ -250,7 +299,7 @@ fn render_wav(op: &Opcoes) -> Result<(), String> {
         op.modelo.nome(),
         if tem_tampo { "sim" } else { "não" }
     );
-    for (q, texto) in r.marcos.iter().filter(|_| op.roteiro == Some(QualRoteiro::Pedais)) {
+    for (q, texto) in r.marcos.iter().filter(|_| marcos_em_linhas(op)) {
         println!("  {:5.1} s  {texto}", *q as f64 / TAXA as f64);
     }
     println!(
@@ -311,6 +360,9 @@ fn clonar(op: &Opcoes) -> Opcoes {
     Opcoes {
         modo: Modo::Bench,
         roteiro: op.roteiro,
+        partitura: op.partitura.clone(),
+        musicxml: op.musicxml.clone(),
+        humanizar: op.humanizar,
         modelo: op.modelo,
         segurar_s: op.segurar_s,
         wav: op.wav.clone(),
@@ -397,7 +449,7 @@ mod tempo_real {
                 }
                 Ok(())
             }
-            Modo::Tocar => tocar(op, &fazer_roteiro(op)),
+            Modo::Tocar => tocar(op, &fazer_roteiro(op)?),
             _ => interativo(op),
         }
     }
@@ -460,7 +512,7 @@ mod tempo_real {
             }
             while let Some((_, texto)) = marcos.next_if(|(q, _)| inicio + q <= agora) {
                 // marcos de nota sobrescrevem a linha; os de texto ficam
-                if op.roteiro == Some(QualRoteiro::Pedais) {
+                if marcos_em_linhas(op) {
                     println!("{texto}");
                 } else {
                     print!("\r\x1b[K{texto}");

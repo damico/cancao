@@ -20,6 +20,7 @@ cpal = { version = "0.15.3", optional = true }
 rtrb = "0.3.1"
 crossterm = "0.28.1"
 libc = "0.2"
+roxmltree = "0.20.0"
 
 [profile.release]
 codegen-units = 1

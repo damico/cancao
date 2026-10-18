@@ -114,7 +114,7 @@ pub fn cordas(fator_tensao: f64) -> Vec<Corda> {
     (0..NUM_TECLAS)
         .map(|k| {
             let midi = (k + 21) as u8;
-            let nome = format!("{}{}", NOMES[midi as usize % 12], midi as i32 / 12 - 1);
+            let nome = nome(k);
             let f_alvo = 440.0 * 2f64.powf((k as f64 - 48.0) / 12.0);
             let l = comprimento(f_alvo);
 
@@ -152,6 +152,12 @@ pub fn cordas(fator_tensao: f64) -> Vec<Corda> {
             }
         })
         .collect()
+}
+
+/// Nome da tecla 0..87: "A0", "C#4", ...
+pub fn nome(tecla: usize) -> String {
+    let midi = tecla + 21;
+    format!("{}{}", NOMES[midi % 12], midi as i32 / 12 - 1)
 }
 
 /// Converte "A4", "C#3", "Bb2" na tecla 0..87.
