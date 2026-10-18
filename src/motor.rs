@@ -248,13 +248,13 @@ mod testes {
 
     #[test]
     fn guia_de_onda_afinado_pela_formula() {
-        // sem rigidez (etapa 1) os parciais são harmônicos: a fundamental é f
-        // (o atraso exato do laço é testado em guia.rs para as 88 teclas;
-        // aqui conferimos o som de verdade, com 3 s para ter resolução)
+        // com rigidez a fundamental é f √(1 + B), como no modal (o atraso
+        // exato do laço é testado em guia.rs para as 88 teclas e todos os
+        // parciais; aqui conferimos o som de verdade, com 3 s de resolução)
         for nome in ["A0", "A2", "A4", "C6", "C8"] {
             let tecla = tecla_de_nome(nome).unwrap();
             let mut m = Motor::new(Synth::new(TAXA, 1.0, None).com_modelo(Modelo::Guia), TAXA);
-            let f = m.synth().cordas()[tecla].f;
+            let f = m.synth().cordas()[tecla].parcial(1);
             m.agendar(EventoAgendado::agora(Evento::NotaOn { tecla: tecla as u8, vel: 0.7 }));
             let s = tocar(&mut m, 3.0);
             let medido = pico(&s, f * 0.995, f * 1.005);

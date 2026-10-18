@@ -80,20 +80,26 @@ programa sai explicando como reiniciar o PipeWire.
   volta é uma linha de atraso de `taxa / f` amostras, com filtro de perdas
   (passa-baixa de um polo) e passa-tudo de atraso fracionário para afinação
   exata. O martelo injeta um pulso de força a 1/8 da corda, e a reflexão na
-  ponta próxima apaga os harmônicos múltiplos de 8 sozinha. Custa cerca de
-  1/3 do modal (`--bench`).
+  ponta próxima apaga os harmônicos múltiplos de 8 sozinha. A rigidez do
+  aço entra por uma cascata de passa-tudos (até 32 seções, projetada por
+  tecla ao criar o instrumento): os agudos dão a volta mais rápido e os
+  parciais caem em `f_n = n*f*√(1 + B*n²)`. As cordas do uníssono passam
+  pelos filtros em paralelo (SIMD); custa menos que o modal (`--bench`).
 
 Etapas do guia de onda:
 
 1. ~~Laço afinado por L, T e μ, perdas, martelo como pulso~~ (afinação
    medida nas 88 teclas: no máximo 1,2 cent)
-2. Rigidez: filtros de dispersão (inarmonicidade B)
+2. ~~Rigidez: filtros de dispersão (inarmonicidade B)~~ (parciais medidos
+   no som gerado: 1,6 a 4,7 cents RMS de `f_n`, contra 32 a 55 cents sem
+   rigidez)
 3. Martelo não linear (feltro como mola dura)
 4. Cordas do uníssono acopladas no cavalete (decaimento em dois estágios,
    batimentos, ressonância simpática)
 
-Nesta etapa o guia de onda ainda soa mais "harpa" que piano: os parciais
-são harmônicos (sem B) e o decaimento é único.
+Ainda falta o martelo de feltro (hoje um pulso em forma de cosseno, cujo
+espectro tem nulos que quase apagam alguns parciais, ex.: o 7º do A4) e o
+decaimento em dois estágios, que virá do acoplamento das cordas.
 
 ## Pedais
 

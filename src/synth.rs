@@ -29,7 +29,7 @@ use std::f32::consts::PI;
 
 use crate::corda::{self, Corda, NUM_TECLAS};
 use crate::eventos::Pedal;
-use crate::guia::VozGuia;
+use crate::guia::{self, Dispersao, VozGuia};
 use crate::modal::VozModal;
 use crate::tampo::{self, Tampo};
 
@@ -113,6 +113,8 @@ impl Default for Voz {
 pub struct Synth {
     taxa: f32,
     cordas: Vec<Corda>,
+    /// filtro de dispersão de cada tecla para o guia de onda
+    dispersao: Vec<Dispersao>,
     vozes: Box<[Voz; MAX_VOZES]>,
     relogio: u32,
     /// modelo usado nas próximas notas
@@ -133,9 +135,11 @@ pub struct Synth {
 
 impl Synth {
     pub fn new(taxa: f32, fator_tensao: f64, tampo: Option<Tampo>) -> Self {
+        let cordas = corda::cordas(fator_tensao);
         Synth {
             taxa,
-            cordas: corda::cordas(fator_tensao),
+            dispersao: cordas.iter().map(|c| guia::projetar_dispersao(c, taxa)).collect(),
+            cordas,
             // via Vec: um array de vozes no stack passaria de 800 KB
             vozes: vec![Voz::default(); MAX_VOZES].into_boxed_slice().try_into().ok().unwrap(),
             relogio: 0,
@@ -208,7 +212,7 @@ impl Synth {
         let ganho = 0.35 * vel.powf(1.6) * brilho;
         let corpo = match self.modelo {
             Modelo::Modal => Corpo::Modal(VozModal::new(c, vel, self.una_corda, ganho, taxa)),
-            Modelo::Guia => Corpo::Guia(VozGuia::new(c, vel, self.una_corda, ganho, taxa)),
+            Modelo::Guia => Corpo::Guia(VozGuia::new(c, self.dispersao[tecla], vel, self.una_corda, ganho, taxa)),
         };
 
         let i_voz = self.achar_voz(tecla);

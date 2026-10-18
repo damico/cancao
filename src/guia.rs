@@ -35,8 +35,14 @@
 //! para a ponta mais próxima volta invertida e atrasada, e isso apaga
 //! sozinho os harmônicos múltiplos de 8, sem fórmula.
 //!
-//! Etapa 1 do roteiro: ainda sem rigidez (inarmonicidade), sem martelo não
-//! linear e sem acoplamento das cordas no cavalete.
+//! Rigidez (etapa 2): num fio de aço, as frequências altas viajam mais rápido
+//! (dispersão) e os parciais ficam esticados, f_n = n f √(1 + B n²). Uma
+//! cascata de passa-tudos de 1ª ordem no laço tem atraso que diminui com a
+//! frequência: os agudos dão a volta mais depressa. O número de seções e o
+//! coeficiente são escolhidos por tecla para os parciais caírem em f_n.
+//!
+//! Ainda sem martelo não linear (etapa 3) e sem acoplamento das cordas no
+//! cavalete (etapa 4).
 
 use std::f32::consts::PI;
 
@@ -48,85 +54,146 @@ use crate::synth::{BLOCO, DESAFINO_UNISSONO, MAX_UNISSONO, POS_MARTELO, SIMPATIA
 const MAX_ATRASO: usize = 2048;
 /// Pulso do martelo (até ~4 ms) mais a reflexão (até ~1/8 da volta).
 const MAX_EXCITACAO: usize = 1024;
+/// Seções do filtro de dispersão.
+pub const MAX_DISPERSAO: usize = 32;
+/// Parciais acima disto não entram no projeto da dispersão (nos agudos o
+/// limite sobe para incluir pelo menos o 2º e o 3º parcial).
+const F_MAX_DISPERSAO: f32 = 5000.0;
 
-/// Uma corda do uníssono.
+fn limite_dispersao(f1: f32, taxa: f32) -> f32 {
+    F_MAX_DISPERSAO.max(3.5 * f1).min(0.45 * taxa)
+}
+
+/// Filtro de dispersão de uma tecla: `m` passa-tudos iguais de coeficiente `a`.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Dispersao {
+    pub m: usize,
+    pub a: f32,
+}
+
+/// Atraso de fase (amostras) de y = a*x + x₋₁ − a*y₋₁ na frequência w (rad/amostra).
+fn atraso_passa_tudo(a: f32, w: f32) -> f32 {
+    // A = (a + e^{-jω}) / (1 + a e^{-jω}): fase do numerador menos a do denominador
+    let fase = (-w.sin()).atan2(a + w.cos()) - (-a * w.sin()).atan2(1.0 + a * w.cos());
+    -fase / w
+}
+
+/// Atraso de fase (amostras) do filtro de perdas g*(1+a) / (1 + a*z⁻¹).
+fn atraso_perdas(a: f32, w: f32) -> f32 {
+    (-a * w.sin()).atan2(1.0 + a * w.cos()) / w
+}
+
+/// Afinação da volta: com o atraso dos filtros de perdas e de dispersão na
+/// fundamental, devolve a parte inteira da linha e o coeficiente η do
+/// passa-tudo fracionário que completa exatamente `taxa / f`.
+fn sintonia(f: f32, a_perdas: f32, disp: Dispersao, taxa: f32) -> (usize, f32) {
+    let w0 = 2.0 * PI * f / taxa;
+    let filtros = atraso_perdas(a_perdas, w0) + disp.m as f32 * atraso_passa_tudo(disp.a, w0);
+    let resto = taxa / f - filtros;
+    let n = ((resto - 0.5).floor() as usize).clamp(2, MAX_ATRASO - 1);
+    let delta = resto - n as f32; // entre 0,5 e 1,5: passa-tudo bem comportado
+    // atraso de fase exatamente delta na fundamental
+    let eta = ((1.0 - delta) * w0 / 2.0).sin() / ((1.0 + delta) * w0 / 2.0).sin();
+    (n, eta)
+}
+
+/// Atraso de fase de uma volta completa do laço na frequência w.
+fn atraso_volta(n: usize, a_perdas: f32, disp: Dispersao, eta: f32, w: f32) -> f32 {
+    n as f32 + atraso_perdas(a_perdas, w) + disp.m as f32 * atraso_passa_tudo(disp.a, w) + atraso_passa_tudo(eta, w)
+}
+
+/// Erro tolerado nos parciais: abaixo disto a diferença é inaudível, e mais
+/// seções só custariam processamento.
+const TOLERANCIA_CENTS: f32 = 1.5;
+
+/// Decaimento da fundamental no guia de onda: sem o acoplamento das cordas
+/// (etapa 4) não há decaimento em dois estágios; um único decaimento entre
+/// os dois do modelo modal.
+fn tau_guia(f: f32) -> f32 {
+    2.5 * tau_base(f)
+}
+
+/// Escolhe o filtro de dispersão da corda: para cada número de seções, o
+/// coeficiente que minimiza o erro (cents, RMS) dos parciais abaixo de
+/// 5 kHz; fica o menor número de seções com erro tolerável. O atraso extra
+/// precisa caber numa volta da corda, o que limita os agudos. Caro demais
+/// para fazer a cada nota: calcula-se uma vez por tecla.
+pub fn projetar_dispersao(c: &Corda, taxa: f32) -> Dispersao {
+    let f1 = c.parcial(1) as f32;
+    let (a_lp, _) = ajustar_perdas(f1, tau_guia(f1), taxa);
+    let w = |n: u32| 2.0 * PI * c.parcial(n) as f32 / taxa;
+    let f_lim = limite_dispersao(f1, taxa);
+    let parciais: Vec<u32> = (2..=40).filter(|&n| (c.parcial(n) as f32) < f_lim).collect();
+    if parciais.is_empty() {
+        return Dispersao::default();
+    }
+    let w1 = w(1);
+
+    // laço completo, como a corda o monta (inclusive a dispersão do
+    // passa-tudo fracionário, que pesa nos agudos)
+    let erro = |m: usize, a: f32| -> f32 {
+        let disp = Dispersao { m, a };
+        if atraso_perdas(a_lp, w1) + m as f32 * atraso_passa_tudo(a, w1) + 2.5 > taxa / f1 {
+            return f32::INFINITY; // não cabe numa volta
+        }
+        let (n_int, eta) = sintonia(f1, a_lp, disp, taxa);
+        let soma: f32 = parciais
+            .iter()
+            .map(|&n| {
+                let alvo = taxa * n as f32 / c.parcial(n) as f32;
+                let cents = 1200.0 * (alvo / atraso_volta(n_int, a_lp, disp, eta, w(n))).log2();
+                cents * cents
+            })
+            .sum();
+        (soma / parciais.len() as f32).sqrt()
+    };
+
+    // melhor coeficiente para cada número de seções
+    let mut opcoes = vec![(erro(0, 0.0), Dispersao::default())];
+    for m in 1..=MAX_DISPERSAO {
+        // busca da seção áurea em a ∈ [−0,99, 0], reaproveitando um ponto
+        let r = 0.618_034f32;
+        let (mut lo, mut hi) = (-0.99f32, 0.0f32);
+        let (mut x1, mut x2) = (hi - r * (hi - lo), lo + r * (hi - lo));
+        let (mut e1, mut e2) = (erro(m, x1), erro(m, x2));
+        for _ in 0..30 {
+            if e1 < e2 {
+                (hi, x2, e2) = (x2, x1, e1);
+                x1 = hi - r * (hi - lo);
+                e1 = erro(m, x1);
+            } else {
+                (lo, x1, e1) = (x1, x2, e2);
+                x2 = lo + r * (hi - lo);
+                e2 = erro(m, x2);
+            }
+        }
+        let a = 0.5 * (lo + hi);
+        opcoes.push((erro(m, a), Dispersao { m, a }));
+    }
+    let melhor_erro = opcoes.iter().map(|o| o.0).fold(f32::INFINITY, f32::min);
+    let aceitavel = TOLERANCIA_CENTS.max(1.1 * melhor_erro);
+    opcoes.into_iter().find(|o| o.0 <= aceitavel).map(|o| o.1).unwrap_or_default()
+}
+
+/// Linha de atraso de uma corda do uníssono.
 #[derive(Clone, Copy)]
-struct Corda1 {
-    linha: [f32; MAX_ATRASO],
+struct Linha {
+    buf: [f32; MAX_ATRASO],
     pos: usize,
     /// parte inteira do atraso
     n: usize,
-    /// filtro de perdas: y = b*x − a*y₋₁, com b = g*(1 + a)
-    a: f32,
-    b: f32,
-    g_natural: f32,
-    lp_y1: f32,
-    /// passa-tudo fracionário: y = η*x + x₋₁ − η*y₋₁
-    eta: f32,
-    ap_x1: f32,
-    ap_y1: f32,
-    /// quanto do golpe esta corda recebe (una corda: a corda não atingida
-    /// recebe pouco)
-    golpe: f32,
 }
 
-impl Default for Corda1 {
+impl Default for Linha {
     fn default() -> Self {
-        Corda1 {
-            linha: [0.0; MAX_ATRASO],
-            pos: 0,
-            n: 2,
-            a: 0.0,
-            b: 0.0,
-            g_natural: 0.0,
-            lp_y1: 0.0,
-            eta: 0.0,
-            ap_x1: 0.0,
-            ap_y1: 0.0,
-            golpe: 0.0,
-        }
+        Linha { buf: [0.0; MAX_ATRASO], pos: 0, n: 2 }
     }
 }
 
-impl Corda1 {
-    /// `f`: frequência desta corda; `tau0`: decaimento da fundamental (s)
-    fn new(f: f32, tau0: f32, golpe: f32, taxa: f32) -> Self {
-        let w0 = 2.0 * PI * f / taxa;
-        let (a, g) = ajustar_perdas(f, tau0, taxa);
-
-        // atraso total de uma volta = taxa / f; o filtro de perdas já atrasa
-        // um pouco, e o passa-tudo completa a fração que falta
-        let atraso_lp = (-a * w0.sin()).atan2(1.0 + a * w0.cos()) / w0;
-        let resto = taxa / f - atraso_lp;
-        let n = ((resto - 0.5).floor() as usize).clamp(2, MAX_ATRASO - 1);
-        let delta = resto - n as f32; // entre 0,5 e 1,5: passa-tudo bem comportado
-        // atraso de fase exatamente delta na fundamental
-        let eta = ((1.0 - delta) * w0 / 2.0).sin() / ((1.0 + delta) * w0 / 2.0).sin();
-
-        Corda1 { n, a, b: g * (1.0 + a), g_natural: g, eta, golpe, ..Corda1::default() }
-    }
-
-    fn abafador(&mut self, fator: f32) {
-        self.b = self.g_natural * fator * (1.0 + self.a);
-    }
-
-    #[inline]
-    fn amostra(&mut self, entrada: f32) -> f32 {
-        let x = self.linha[self.pos];
-        let lp = self.b * x - self.a * self.lp_y1;
-        self.lp_y1 = lp;
-        let ap = self.eta * lp + self.ap_x1 - self.eta * self.ap_y1;
-        self.ap_x1 = lp;
-        self.ap_y1 = ap;
-        let v = ap + entrada * self.golpe;
-        self.linha[self.pos] = v;
-        self.pos += 1;
-        if self.pos == self.n {
-            self.pos = 0;
-        }
-        v
-    }
-}
+/// Faixas de processamento: as cordas do uníssono passam pelos filtros lado
+/// a lado (SIMD), uma por faixa; faixas sem corda ficam zeradas.
+const FAIXAS: usize = 4;
+type Faixas = [f32; FAIXAS];
 
 /// Filtro de perdas H(z) = g*(1+a) / (1 + a*z⁻¹) tal que, por volta na corda,
 /// a fundamental decai com `tau0` e uma frequência 3 kHz acima dela decai
@@ -154,8 +221,24 @@ fn ajustar_perdas(f: f32, tau0: f32, taxa: f32) -> (f32, f32) {
 
 #[derive(Clone, Copy)]
 pub struct VozGuia {
-    cordas: [Corda1; MAX_UNISSONO],
+    linhas: [Linha; MAX_UNISSONO],
     nu: usize,
+    // filtros de cada corda, uma por faixa
+    /// perdas: y = b*x − a*y₋₁, com b = g*(1 + a)
+    lp_a: Faixas,
+    lp_b: Faixas,
+    g_natural: Faixas,
+    lp_y1: Faixas,
+    /// dispersão: `disp.m` passa-tudos iguais (o mesmo para todas as cordas)
+    disp: Dispersao,
+    disp_x1: [Faixas; MAX_DISPERSAO],
+    disp_y1: [Faixas; MAX_DISPERSAO],
+    /// passa-tudo fracionário: y = η*x + x₋₁ − η*y₋₁
+    eta: Faixas,
+    ap_x1: Faixas,
+    ap_y1: Faixas,
+    /// quanto do golpe cada corda recebe (una corda: a não atingida recebe pouco)
+    golpe: Faixas,
     excitacao: [f32; MAX_EXCITACAO],
     len_exc: usize,
     t: usize,
@@ -170,8 +253,19 @@ pub struct VozGuia {
 impl Default for VozGuia {
     fn default() -> Self {
         VozGuia {
-            cordas: [Corda1::default(); MAX_UNISSONO],
+            linhas: [Linha::default(); MAX_UNISSONO],
             nu: 0,
+            lp_a: [0.0; FAIXAS],
+            lp_b: [0.0; FAIXAS],
+            g_natural: [0.0; FAIXAS],
+            lp_y1: [0.0; FAIXAS],
+            disp: Dispersao::default(),
+            disp_x1: [[0.0; FAIXAS]; MAX_DISPERSAO],
+            disp_y1: [[0.0; FAIXAS]; MAX_DISPERSAO],
+            eta: [0.0; FAIXAS],
+            ap_x1: [0.0; FAIXAS],
+            ap_y1: [0.0; FAIXAS],
+            golpe: [0.0; FAIXAS],
             excitacao: [0.0; MAX_EXCITACAO],
             len_exc: 0,
             t: 0,
@@ -184,17 +278,23 @@ impl Default for VozGuia {
 
 impl VozGuia {
     /// `ganho`: volume da nota (força, compensação dos agudos).
-    pub fn new(c: &Corda, vel: f32, una_corda: f32, ganho: f32, taxa: f32) -> Self {
-        let f = c.f as f32;
-        let mut v = VozGuia { nu: c.n_cordas, f, ..VozGuia::default() };
-
-        // sem o acoplamento das cordas (etapa 4) não há decaimento em dois
-        // estágios; um único decaimento entre os dois do modelo modal
-        let tau0 = 2.5 * tau_base(f);
+    /// `disp`: filtro de dispersão da tecla ([`projetar_dispersao`]).
+    pub fn new(c: &Corda, disp: Dispersao, vel: f32, una_corda: f32, ganho: f32, taxa: f32) -> Self {
+        // com rigidez a fundamental também sobe um pouco: f √(1 + B)
+        let f = c.parcial(1) as f32;
+        let mut v = VozGuia { nu: c.n_cordas, f, disp, ..VozGuia::default() };
+        let tau0 = tau_guia(f);
         let atingidas = if una_corda >= 0.5 && v.nu > 1 { v.nu - 1 } else { v.nu };
         for (u, &cents) in DESAFINO_UNISSONO[..v.nu].iter().enumerate() {
-            let golpe = if u < atingidas { 1.0 } else { SIMPATIA_UNA_CORDA };
-            v.cordas[u] = Corda1::new(f * 2f32.powf(cents / 1200.0), tau0, golpe, taxa);
+            let fu = f * 2f32.powf(cents / 1200.0);
+            let (a, g) = ajustar_perdas(fu, tau0, taxa);
+            // atraso total de uma volta = taxa / f; os filtros de perdas e de
+            // dispersão já atrasam, e o passa-tudo fracionário completa o resto
+            let (n, eta) = sintonia(fu, a, disp, taxa);
+            v.linhas[u].n = n;
+            (v.lp_a[u], v.lp_b[u], v.g_natural[u]) = (a, g * (1.0 + a), g);
+            v.eta[u] = eta;
+            v.golpe[u] = if u < atingidas { 1.0 } else { SIMPATIA_UNA_CORDA };
         }
 
         // martelo: pulso de força de ~4 ms no A0 a ~0,5 ms no C8; mais curto
@@ -248,26 +348,60 @@ impl VozGuia {
     pub fn abafador(&mut self, contato: f32, _taxa: f32) {
         // perda extra por volta (1/f segundos) com o abafador encostado
         let fator = (-contato / (TAU_ABAFADO * self.f)).exp();
-        for c in &mut self.cordas[..self.nu] {
-            c.abafador(fator);
+        for u in 0..self.nu {
+            self.lp_b[u] = self.g_natural[u] * fator * (1.0 + self.lp_a[u]);
         }
     }
 
     /// Escreve um bloco mono; devolve uma medida da energia restante.
     pub fn render(&mut self, mono: &mut [f32; BLOCO]) -> f32 {
+        let a = self.disp.a;
         for m in mono.iter_mut() {
             let e = if self.t < self.len_exc { self.excitacao[self.t] } else { 0.0 };
             self.t += 1;
+
+            // o que volta de uma volta na corda, em cada faixa
+            let mut d: Faixas = [0.0; FAIXAS];
+            for u in 0..self.nu {
+                let l = &self.linhas[u];
+                d[u] = l.buf[l.pos];
+            }
+            for u in 0..FAIXAS {
+                d[u] = self.lp_b[u] * d[u] - self.lp_a[u] * self.lp_y1[u];
+                self.lp_y1[u] = d[u];
+            }
+            for k in 0..self.disp.m {
+                let (x1, y1) = (&mut self.disp_x1[k], &mut self.disp_y1[k]);
+                for u in 0..FAIXAS {
+                    let y = a * d[u] + x1[u] - a * y1[u];
+                    x1[u] = d[u];
+                    y1[u] = y;
+                    d[u] = y;
+                }
+            }
+            for u in 0..FAIXAS {
+                let ap = self.eta[u] * d[u] + self.ap_x1[u] - self.eta[u] * self.ap_y1[u];
+                self.ap_x1[u] = d[u];
+                self.ap_y1[u] = ap;
+                d[u] = ap + e * self.golpe[u];
+            }
+
             let mut s = 0f32;
-            for c in &mut self.cordas[..self.nu] {
-                s += c.amostra(e);
+            for u in 0..self.nu {
+                let l = &mut self.linhas[u];
+                l.buf[l.pos] = d[u];
+                l.pos += 1;
+                if l.pos == l.n {
+                    l.pos = 0;
+                }
+                s += d[u];
             }
             *m = s;
             self.envoltoria = s.abs().max(self.envoltoria * self.queda_envoltoria);
         }
         // ainda golpeando, ou a onda ainda não completou a primeira volta (a
         // saída fica em silêncio enquanto ela viaja): não deixa desligar
-        let primeira_volta = self.len_exc + self.cordas[0].n;
+        let primeira_volta = self.len_exc + self.linhas[0].n;
         if self.t < primeira_volta { 1.0 } else { self.envoltoria }
     }
 }
@@ -276,26 +410,50 @@ impl VozGuia {
 mod testes {
     use super::*;
 
-    /// atraso de fase de y = η*x + x₋₁ − η*y₋₁ em ω (amostras)
-    fn atraso_passa_tudo(eta: f32, w: f32) -> f32 {
-        // A = (η + e^{-jω}) / (1 + η e^{-jω}): fase do numerador menos a do denominador
-        let fase = (-w.sin()).atan2(eta + w.cos()) - (-eta * w.sin()).atan2(1.0 + eta * w.cos());
-        -fase / w
+    use crate::corda;
+
+    /// erro (cents) de cada parcial abaixo de 5 kHz em relação a f_n da fórmula
+    fn erros_parciais(k: usize) -> Vec<f32> {
+        let taxa = 48000.0;
+        let cordas = corda::cordas(1.0);
+        let c = &cordas[k];
+        let f1 = c.parcial(1) as f32;
+        let disp = projetar_dispersao(c, taxa);
+        let (a, _) = ajustar_perdas(f1, tau_guia(f1), taxa);
+        let (n, eta) = sintonia(f1, a, disp, taxa);
+        (1..=40)
+            .map(|n| c.parcial(n) as f32)
+            .take_while(|&f| f < limite_dispersao(f1, taxa))
+            .enumerate()
+            .map(|(i, f)| {
+                let alvo = taxa * (i + 1) as f32 / f;
+                1200.0 * (alvo / atraso_volta(n, a, disp, eta, 2.0 * PI * f / taxa)).log2()
+            })
+            .collect()
     }
 
     #[test]
-    fn laco_tem_exatamente_uma_volta_de_atraso() {
-        // parte inteira + filtro de perdas + passa-tudo = taxa / f, em toda a extensão
-        let taxa = 48000.0;
+    fn fundamental_exata_nas_88_teclas() {
         for k in 0..88 {
-            let f = 27.5 * 2f32.powf(k as f32 / 12.0);
-            let c = Corda1::new(f, 2.5 * tau_base(f), 1.0, taxa);
-            let w0 = 2.0 * PI * f / taxa;
-            let atraso_lp = (-c.a * w0.sin()).atan2(1.0 + c.a * w0.cos()) / w0;
-            let total = c.n as f32 + atraso_lp + atraso_passa_tudo(c.eta, w0);
-            let erro = total - taxa / f;
-            assert!(erro.abs() < 2e-3 * (taxa / f) / 100.0 + 1e-3, "tecla {k} ({f:.1} Hz): erro {erro} amostras");
+            let e = erros_parciais(k)[0];
+            assert!(e.abs() < 0.05, "tecla {k}: fundamental com erro de {e} cents");
         }
+    }
+
+    #[test]
+    fn parciais_seguem_a_inarmonicidade() {
+        // sem dispersão os parciais ficariam até ~100 cents abaixo de f_n;
+        // com ela: médios abaixo de 1,5 cent, graves e agudos extremos (onde
+        // a cascata de 1ª ordem e o atraso de uma volta limitam) até ~6
+        let (mut pior_rms, mut pior) = (0f32, 0f32);
+        for k in 0..88 {
+            let e = erros_parciais(k);
+            let rms = (e.iter().map(|x| x * x).sum::<f32>() / e.len() as f32).sqrt();
+            pior_rms = pior_rms.max(rms);
+            pior = e.iter().fold(pior, |m, x| m.max(x.abs()));
+        }
+        println!("pior RMS {pior_rms:.2} cents, pior parcial {pior:.2} cents");
+        assert!(pior_rms < 7.0 && pior < 20.0, "rms {pior_rms}, pior {pior}");
     }
 
     #[test]
