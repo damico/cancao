@@ -40,6 +40,9 @@ pub struct Nota {
     pub pauta: Pauta,
     /// dinâmica escrita, 0..1 (pp ~0,2, mf ~0,55, ff ~0,9)
     pub dinamica: f32,
+    /// voz musical (contraponto); no MusicXML de piano, 1 a 4 na pauta de
+    /// cima e 5 a 8 na de baixo
+    pub voz: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -50,17 +53,29 @@ pub struct Partitura {
     pub andamentos: Vec<(f64, f64)>,
     /// pedal de sustain: (abaixa, solta), em semínimas
     pub pedais: Vec<(f64, f64)>,
+    /// fórmulas de compasso: (a partir de qual semínima, tempos, unidade);
+    /// vazio = 4/4
+    pub compassos: Vec<(f64, u32, u32)>,
+    /// início (semínimas) de cada compasso como está no arquivo, inclusive
+    /// anacruse e compassos irregulares; vazio = calcular pela fórmula
+    pub inicios_compasso: Vec<f64>,
 }
 
 impl Partitura {
-    /// Instante em segundos de uma posição em semínimas, pelo andamento.
-    pub fn segundos(&self, tempo: f64) -> f64 {
+    /// Mudanças de andamento em ordem, começando em 0.
+    fn marcas_de_andamento(&self) -> Vec<(f64, f64)> {
         let mut marcas = self.andamentos.clone();
         marcas.sort_by(|a, b| a.0.total_cmp(&b.0));
         if marcas.first().is_none_or(|m| m.0 > 0.0) {
             let bpm = marcas.first().map_or(120.0, |m| m.1);
             marcas.insert(0, (0.0, bpm));
         }
+        marcas
+    }
+
+    /// Instante em segundos de uma posição em semínimas, pelo andamento.
+    pub fn segundos(&self, tempo: f64) -> f64 {
+        let marcas = self.marcas_de_andamento();
         let mut s = 0.0;
         for (i, &(ini, bpm)) in marcas.iter().enumerate() {
             let fim = marcas.get(i + 1).map_or(f64::INFINITY, |m| m.0);
@@ -70,6 +85,60 @@ impl Partitura {
             s += (fim - ini) * 60.0 / bpm;
         }
         s
+    }
+
+    /// O inverso de [`Partitura::segundos`]: posição em semínimas de um instante.
+    pub fn tempo_em(&self, segundos: f64) -> f64 {
+        let marcas = self.marcas_de_andamento();
+        let mut s = 0.0;
+        for (i, &(ini, bpm)) in marcas.iter().enumerate() {
+            let fim = marcas.get(i + 1).map_or(f64::INFINITY, |m| m.0);
+            let duracao = (fim - ini) * 60.0 / bpm;
+            if segundos <= s + duracao {
+                return ini + (segundos - s) * bpm / 60.0;
+            }
+            s += duracao;
+        }
+        0.0
+    }
+
+    /// Andamento (semínimas por minuto) numa posição.
+    pub fn bpm_em(&self, tempo: f64) -> f64 {
+        self.marcas_de_andamento().iter().rev().find(|m| m.0 <= tempo).map_or(120.0, |m| m.1)
+    }
+
+    /// Fim da última nota, em semínimas.
+    pub fn fim(&self) -> f64 {
+        self.notas.iter().map(|n| n.inicio + n.duracao).fold(0.0, f64::max)
+    }
+
+    /// Fórmula de compasso (tempos, unidade) numa posição.
+    pub fn formula_em(&self, tempo: f64) -> (u32, u32) {
+        self.compassos.iter().rev().find(|c| c.0 <= tempo + 1e-9).map_or((4, 4), |c| (c.1, c.2))
+    }
+
+    /// Início (semínimas) de cada compasso até `ate`, numerados a partir de 1.
+    /// Usa os inícios do arquivo e, depois do último deles, a fórmula.
+    pub fn inicios_de_compasso(&self, ate: f64) -> Vec<f64> {
+        let mut inicios: Vec<f64> = self.inicios_compasso.iter().copied().take_while(|&t| t <= ate + 1e-9).collect();
+        if inicios.len() < self.inicios_compasso.len() {
+            return inicios;
+        }
+        let mut t = inicios.pop().unwrap_or(0.0);
+        while t <= ate + 1e-9 && inicios.len() < 100_000 {
+            inicios.push(t);
+            let (tempos, unidade) = self.formula_em(t);
+            t += tempos as f64 * 4.0 / unidade as f64;
+        }
+        inicios
+    }
+
+    /// Compasso (a partir de 1) e tempo dentro dele (a partir de 1) de uma posição.
+    pub fn compasso_e_tempo(&self, tempo: f64) -> (usize, f64) {
+        let inicios = self.inicios_de_compasso(tempo);
+        let i = inicios.len().max(1) - 1;
+        let (_, unidade) = self.formula_em(inicios[i]);
+        (i + 1, 1.0 + (tempo - inicios[i]) * unidade as f64 / 4.0)
     }
 }
 
@@ -90,7 +159,8 @@ fn tecla(nome: &str) -> u8 {
 }
 
 fn nota(inicio: f64, duracao: f64, nome: &str, pauta: Pauta, dinamica: f32) -> Nota {
-    Nota { inicio, duracao, tecla: tecla(nome), pauta, dinamica }
+    let voz = if pauta == Pauta::Superior { 1 } else { 5 };
+    Nota { inicio, duracao, tecla: tecla(nome), pauta, dinamica, voz }
 }
 
 /// Escala de Dó maior em duas oitavas, mãos paralelas, subindo e descendo.
@@ -112,7 +182,7 @@ fn escala() -> Partitura {
         notas.push(nota(t, dur, &format!("{n}{}", 4 + oitava), Pauta::Superior, 0.55));
         notas.push(nota(t, dur, &format!("{n}{}", 3 + oitava), Pauta::Inferior, 0.5));
     }
-    Partitura { titulo: "Escala de Dó maior, duas oitavas".into(), notas, andamentos: vec![(0.0, 100.0)], pedais: vec![] }
+    Partitura { titulo: "Escala de Dó maior, duas oitavas".into(), notas, andamentos: vec![(0.0, 100.0)], pedais: vec![], compassos: vec![(0.0, 4, 4)], inicios_compasso: vec![] }
 }
 
 /// I - vi - IV - V - I em Dó, acordes na direita, baixo em oitavas na
@@ -139,7 +209,7 @@ fn acordes() -> Partitura {
         }
         pedais.push((t, t + dur));
     }
-    Partitura { titulo: "Cadência I-vi-IV-V-I em Dó".into(), notas, andamentos: vec![(0.0, 72.0)], pedais }
+    Partitura { titulo: "Cadência I-vi-IV-V-I em Dó".into(), notas, andamentos: vec![(0.0, 72.0)], pedais, compassos: vec![(0.0, 4, 4)], inicios_compasso: vec![] }
 }
 
 /// Situações que o corpo limita: um acorde maior que a mão (arpejado) e seis
@@ -155,7 +225,7 @@ fn desafios() -> Partitura {
     for n in ["G3", "C4", "E4", "G4", "B4", "D5"] {
         notas.push(nota(2.0, 2.0, n, Pauta::Superior, 0.6));
     }
-    Partitura { titulo: "Desafios: acorde largo e seis notas numa pauta".into(), notas, andamentos: vec![(0.0, 60.0)], pedais: vec![] }
+    Partitura { titulo: "Desafios: acorde largo e seis notas numa pauta".into(), notas, andamentos: vec![(0.0, 60.0)], pedais: vec![], compassos: vec![(0.0, 4, 4)], inicios_compasso: vec![] }
 }
 
 #[cfg(test)]
@@ -169,6 +239,25 @@ mod testes {
         p.andamentos = vec![(0.0, 60.0), (4.0, 120.0)];
         assert_eq!(p.segundos(4.0), 4.0);
         assert_eq!(p.segundos(6.0), 5.0);
+    }
+
+    #[test]
+    fn tempo_em_desfaz_segundos() {
+        let p = Partitura { andamentos: vec![(0.0, 60.0), (4.0, 120.0), (10.0, 90.0)], ..Partitura::default() };
+        for t in [0.0, 1.5, 4.0, 7.25, 10.0, 13.0] {
+            assert!((p.tempo_em(p.segundos(t)) - t).abs() < 1e-9, "{t}");
+        }
+        assert_eq!(p.bpm_em(5.0), 120.0);
+    }
+
+    #[test]
+    fn compassos() {
+        let mut p = Partitura::default();
+        assert_eq!(p.compasso_e_tempo(5.5), (2, 2.5)); // 4/4
+        // 3/4 e depois 6/8 a partir da semínima 6
+        p.compassos = vec![(0.0, 3, 4), (6.0, 6, 8)];
+        assert_eq!(p.inicios_de_compasso(10.0), [0.0, 3.0, 6.0, 9.0]);
+        assert_eq!(p.compasso_e_tempo(7.0), (3, 3.0)); // 6/8: a colcheia é o tempo
     }
 
     #[test]

@@ -1,0 +1,667 @@
+// Copyright 2026 José Damico <jose.damico@scicrop.com>
+// SPDX-License-Identifier: Apache-2.0
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+import { ComboBox, Slider } from "std-widgets.slint";
+
+// Piano roll: visualizador temporal da partitura tocada pelo player.
+// O Rust calcula as posições e só entrega o que está visível; aqui só se
+// desenha e se repassam os gestos.
+
+export struct NotaVis {
+    id: int,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    cor: color,
+    rotulo: string,
+    // 0 = futura, 1 = soando, 2 = tocada
+    estado: int,
+    selecionada: bool,
+}
+
+export struct LinhaVis {
+    x: length,
+    // 0 = subdivisão, 1 = tempo, 2 = compasso
+    peso: int,
+}
+
+export struct RotuloVis {
+    x: length,
+    texto: string,
+}
+
+export struct TeclaVis {
+    y: length,
+    h: length,
+    preta: bool,
+    rotulo: string,
+    soando: bool,
+    // divisão entre duas brancas vizinhas abaixo desta (C sobre B, F sobre E)
+    divisao: bool,
+}
+
+export struct BarraVis {
+    x: length,
+    nivel: float,
+    cor: color,
+    selecionada: bool,
+}
+
+export struct FaixaVis {
+    x: length,
+    w: length,
+}
+
+// um sistema da partitura tradicional já rasterizado, na posição da tela
+export struct SistemaVis {
+    imagem: image,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+}
+
+// uma nota desenhada na partitura (para destaque e clique)
+export struct MarcaVis {
+    id: int,
+    x: length,
+    y: length,
+    w: length,
+    h: length,
+    // 0 = nada, 1 = soando, 2 = selecionada
+    estado: int,
+}
+
+export struct LegendaVis {
+    texto: string,
+    cor: color,
+}
+
+component Botao inherits Rectangle {
+    in property <string> texto;
+    in property <bool> ativo: false;
+    callback clicado();
+    height: 30px;
+    min-width: 64px;
+    border-radius: 4px;
+    background: toque.pressed ? #4a4c53 : (ativo ? #5a4a20 : (toque.has-hover ? #3b3d43 : #33353a));
+    border-width: 1px;
+    border-color: ativo ? #f0c040 : #45474e;
+    HorizontalLayout {
+        padding-left: 10px;
+        padding-right: 10px;
+        Text {
+            text: root.texto;
+            color: #e6e6e6;
+            vertical-alignment: center;
+            horizontal-alignment: center;
+        }
+    }
+    toque := TouchArea {
+        clicked => { root.clicado(); }
+    }
+}
+
+component Info inherits Text {
+    color: #b8bac0;
+    vertical-alignment: center;
+}
+
+export component PianoRoll inherits Window {
+    title: "cancao - piano roll";
+    preferred-width: 1400px;
+    preferred-height: 860px;
+    min-width: 900px;
+    min-height: 500px;
+    background: #1b1c1f;
+    default-font-size: 13px;
+
+    in property <string> titulo;
+    in property <string> bpm;
+    in property <string> posicao;
+    in property <string> formula;
+    in property <string> zoom;
+    in property <string> grade;
+    in property <string> modelo;
+    in property <string> modo-cor;
+    in property <bool> tocando;
+    in property <string> info: "Clique numa nota para ver os detalhes.";
+    in property <string> mensagem;
+    in property <[LegendaVis]> legenda;
+    in property <[NotaVis]> notas;
+    in property <[LinhaVis]> linhas;
+    in property <[RotuloVis]> rotulos;
+    in property <[TeclaVis]> teclas;
+    in property <[BarraVis]> barras;
+    in property <[FaixaVis]> pedais;
+    // painel da partitura tradicional (Live Score Panel)
+    // modo: 0 = oculto, 1 = compacto, 2 = expandido, 3 = tela cheia
+    in-out property <int> modo-partitura: 1;
+    in property <length> altura-compacta: 150px;
+    in-out property <length> altura-expandida: 340px;
+    in-out property <bool> seguir: true;
+    in property <string> status-partitura;
+    in property <string> zoom-partitura;
+    in property <[SistemaVis]> sistemas;
+    in property <[MarcaVis]> marcas;
+    out property <length> partitura-largura: corpo-partitura.width;
+    out property <length> partitura-altura: corpo-partitura.height;
+    in property <[string]> dispositivos;
+    in-out property <int> dispositivo-atual;
+    in-out property <float> volume: 100;
+    in property <length> playhead-x;
+    in property <bool> playhead-visivel;
+
+    // tamanho da área do roll, lido pelo Rust a cada quadro (atualizado pelo
+    // próprio roll, que sai do layout com a partitura em tela cheia)
+    in-out property <length> roll-largura: 1000px;
+    in-out property <length> roll-altura: 600px;
+
+    callback abrir();
+    callback tocar();
+    callback pausar();
+    callback parar();
+    callback alternar-modelo();
+    callback zoom-mais();
+    callback zoom-menos();
+    callback alternar-cor();
+    // dx, dy, ctrl, shift, x e y do cursor dentro do roll
+    callback rolar(float, float, bool, bool, length, length);
+    callback clicar-nota(int);
+    callback clicar-regua(length);
+    callback clicar-fundo();
+    callback escolher-dispositivo(string);
+    callback mudar-volume(float);
+    callback clicar-partitura(int);
+    callback rolar-partitura(float);
+    callback zoom-partitura-mais();
+    callback zoom-partitura-menos();
+    callback mudou-partitura();
+
+    VerticalLayout {
+        // barra superior: transporte, título, andamento, posição, zoom
+        Rectangle {
+            height: 48px;
+            background: #26272b;
+            HorizontalLayout {
+                padding: 9px;
+                spacing: 8px;
+                Botao {
+                    texto: "Abrir";
+                    clicado => { root.abrir(); }
+                }
+                Botao {
+                    texto: "Tocar";
+                    ativo: root.tocando;
+                    clicado => { root.tocar(); }
+                }
+                Botao {
+                    texto: "Pausar";
+                    clicado => { root.pausar(); }
+                }
+                Botao {
+                    texto: "Parar";
+                    clicado => { root.parar(); }
+                }
+                Rectangle { width: 8px; }
+                Text {
+                    text: root.titulo;
+                    color: #f2f2f2;
+                    font-size: 15px;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Info { text: root.bpm + " BPM"; }
+                Info { text: root.posicao; font-family: "monospace"; }
+                Info { text: root.formula; }
+                Botao {
+                    texto: "-";
+                    min-width: 30px;
+                    clicado => { root.zoom-menos(); }
+                }
+                Info { text: "Zoom " + root.zoom; }
+                Botao {
+                    texto: "+";
+                    min-width: 30px;
+                    clicado => { root.zoom-mais(); }
+                }
+                Info { text: "Grade " + root.grade; }
+                Rectangle { horizontal-stretch: 1; }
+                for l in root.legenda: HorizontalLayout {
+                    spacing: 4px;
+                    alignment: center;
+                    Rectangle {
+                        width: 10px;
+                        height: 10px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 5px;
+                        background: l.cor;
+                    }
+                    Info { text: l.texto; }
+                }
+                Botao {
+                    texto: root.modo-cor;
+                    clicado => { root.alternar-cor(); }
+                }
+                Botao {
+                    texto: root.modelo;
+                    clicado => { root.alternar-modelo(); }
+                }
+            }
+        }
+
+        // painel da partitura: barra com os modos, depois o corpo
+        Rectangle {
+            height: 38px;
+            background: #2c2d31;
+            HorizontalLayout {
+                padding: 4px;
+                padding-left: 9px;
+                spacing: 6px;
+                Text {
+                    text: "Partitura";
+                    color: #f2f2f2;
+                    font-weight: 700;
+                    vertical-alignment: center;
+                }
+                Botao {
+                    texto: "Ocultar";
+                    ativo: root.modo-partitura == 0;
+                    clicado => { root.modo-partitura = 0; root.mudou-partitura(); }
+                }
+                Botao {
+                    texto: "Compacto";
+                    ativo: root.modo-partitura == 1;
+                    clicado => { root.modo-partitura = 1; root.mudou-partitura(); }
+                }
+                Botao {
+                    texto: "Expandir";
+                    ativo: root.modo-partitura == 2;
+                    clicado => { root.modo-partitura = 2; root.mudou-partitura(); }
+                }
+                Botao {
+                    texto: "Tela cheia";
+                    ativo: root.modo-partitura == 3;
+                    clicado => { root.modo-partitura = 3; root.mudou-partitura(); }
+                }
+                Info { text: root.posicao; }
+                Botao {
+                    texto: "Seguir execução";
+                    ativo: root.seguir;
+                    clicado => { root.seguir = !root.seguir; root.mudou-partitura(); }
+                }
+                Botao {
+                    texto: "-";
+                    min-width: 30px;
+                    clicado => { root.zoom-partitura-menos(); }
+                }
+                Info { text: root.zoom-partitura; }
+                Botao {
+                    texto: "+";
+                    min-width: 30px;
+                    clicado => { root.zoom-partitura-mais(); }
+                }
+                Info {
+                    text: root.status-partitura;
+                    horizontal-stretch: 1;
+                    overflow: elide;
+                }
+            }
+        }
+        corpo-partitura := Rectangle {
+            property <length> fixa: root.modo-partitura == 0 ? 0px : (root.modo-partitura == 1 ? root.altura-compacta : root.altura-expandida);
+            min-height: root.modo-partitura == 3 ? 60px : fixa;
+            max-height: root.modo-partitura == 3 ? 100000px : fixa;
+            vertical-stretch: root.modo-partitura == 3 ? 1 : 0;
+            background: #e9e5da;
+            clip: true;
+            TouchArea {
+                scroll-event(e) => {
+                    root.rolar-partitura(e.delta-y / 1px);
+                    return accept;
+                }
+            }
+            for s in root.sistemas: Image {
+                x: s.x;
+                y: s.y;
+                width: s.w;
+                height: s.h;
+                source: s.imagem;
+                image-fit: fill;
+            }
+            for m in root.marcas: Rectangle {
+                x: m.x - 2px;
+                y: m.y - 2px;
+                width: m.w + 4px;
+                height: m.h + 4px;
+                border-radius: 3px;
+                background: m.estado == 1 ? #f0c04088 : (m.estado == 2 ? #4a90e266 : transparent);
+                border-width: m.estado == 2 ? 1.5px : 0px;
+                border-color: #2a6fc0;
+                TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.clicar-partitura(m.id); }
+                    scroll-event(e) => {
+                        root.rolar-partitura(e.delta-y / 1px);
+                        return accept;
+                    }
+                }
+            }
+        }
+        // divisória arrastável (modo expandido)
+        Rectangle {
+            height: root.modo-partitura == 2 ? 6px : 0px;
+            background: divisoria.has-hover || divisoria.pressed ? #f0c040 : #3a3c42;
+            divisoria := TouchArea {
+                mouse-cursor: row-resize;
+                moved => {
+                    root.altura-expandida = max(80px, root.altura-expandida + self.mouse-y - self.pressed-y);
+                }
+            }
+        }
+
+        // piano roll e faixas (saem do layout com a partitura em tela cheia)
+        if root.modo-partitura != 3: VerticalLayout {
+        vertical-stretch: 1;
+        HorizontalLayout {
+            // coluna do teclado
+            VerticalLayout {
+                width: 64px;
+                Rectangle {
+                    height: 28px;
+                    background: #26272b;
+                }
+                Rectangle {
+                    background: #101113;
+                    clip: true;
+                    // as brancas continuam por baixo das pretas, que são mais curtas
+                    for t in root.teclas: Rectangle {
+                        x: 0px;
+                        y: t.y;
+                        width: parent.width;
+                        height: t.h;
+                        background: t.soando && !t.preta ? #f0c040 : #d9d9d9;
+                        if t.preta: Rectangle {
+                            x: 0px;
+                            width: parent.width * 0.62;
+                            background: t.soando ? #f0c040 : #1c1c1e;
+                        }
+                        if t.divisao: Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: #8a8c93;
+                        }
+                        Text {
+                            x: 4px;
+                            text: t.rotulo;
+                            color: #303030;
+                            font-size: 9px;
+                            vertical-alignment: center;
+                            height: parent.height;
+                        }
+                    }
+                }
+            }
+
+            // régua + roll
+            VerticalLayout {
+                Rectangle {
+                    height: 28px;
+                    background: #26272b;
+                    clip: true;
+                    for l in root.linhas: Rectangle {
+                        visible: l.peso >= 1;
+                        x: l.x;
+                        y: l.peso == 2 ? 0px : 20px;
+                        width: 1px;
+                        height: parent.height - self.y;
+                        background: l.peso == 2 ? #8a8c93 : #5a5c63;
+                    }
+                    for r in root.rotulos: Text {
+                        x: r.x + 4px;
+                        y: 3px;
+                        text: r.texto;
+                        color: #d0d2d8;
+                        font-size: 11px;
+                    }
+                    if root.playhead-visivel: Rectangle {
+                        x: root.playhead-x - 5px;
+                        y: parent.height - 8px;
+                        width: 10px;
+                        height: 8px;
+                        background: #f0c040;
+                    }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.clicar-regua(self.mouse-x); }
+                    }
+                }
+                roll := Rectangle {
+                    background: #232428;
+                    clip: true;
+                    init => {
+                        root.roll-largura = self.width;
+                        root.roll-altura = self.height;
+                    }
+                    changed width => { root.roll-largura = self.width; }
+                    changed height => { root.roll-altura = self.height; }
+                    // linhas das teclas: as pretas mais escuras
+                    for t in root.teclas: Rectangle {
+                        x: 0px;
+                        y: t.y;
+                        width: parent.width;
+                        height: t.h;
+                        background: t.preta ? #1e1f22 : #26272b;
+                        Rectangle {
+                            y: parent.height - 1px;
+                            height: 1px;
+                            background: #1a1b1e;
+                        }
+                    }
+                    for l in root.linhas: Rectangle {
+                        x: l.x;
+                        y: 0px;
+                        width: 1px;
+                        height: parent.height;
+                        background: l.peso == 2 ? #5c5e66 : (l.peso == 1 ? #3c3e44 : #303237);
+                    }
+                    fundo := TouchArea {
+                        clicked => { root.clicar-fundo(); }
+                        scroll-event(e) => {
+                            root.rolar(e.delta-x / 1px, e.delta-y / 1px, e.modifiers.control, e.modifiers.shift, self.mouse-x, self.mouse-y);
+                            return accept;
+                        }
+                    }
+                    for n in root.notas: Rectangle {
+                        x: n.x;
+                        y: n.y;
+                        width: n.w;
+                        height: n.h;
+                        border-radius: 2px;
+                        background: n.cor;
+                        opacity: n.estado == 2 ? 0.4 : 1.0;
+                        border-width: n.selecionada ? 2px : (n.estado == 1 ? 1px : 0px);
+                        border-color: n.selecionada ? #ffffff : #fff0b0;
+                        drop-shadow-blur: n.estado == 1 ? 10px : 0px;
+                        drop-shadow-color: n.cor;
+                        Text {
+                            visible: n.w > 14px && n.h >= 9px;
+                            x: 3px;
+                            height: parent.height;
+                            text: n.rotulo;
+                            color: #111214;
+                            font-size: min(11px, n.h - 1px);
+                            font-weight: 700;
+                            vertical-alignment: center;
+                        }
+                        TouchArea {
+                            clicked => { root.clicar-nota(n.id); }
+                            scroll-event(e) => {
+                                root.rolar(e.delta-x / 1px, e.delta-y / 1px, e.modifiers.control, e.modifiers.shift, n.x + self.mouse-x, n.y + self.mouse-y);
+                                return accept;
+                            }
+                        }
+                    }
+                    if root.playhead-visivel: Rectangle {
+                        x: root.playhead-x - 1px;
+                        y: 0px;
+                        width: 2px;
+                        height: parent.height;
+                        background: #f0c040;
+                    }
+                }
+            }
+
+            // inspetor e áudio
+            Rectangle {
+                width: 230px;
+                background: #26272b;
+                VerticalLayout {
+                    padding: 12px;
+                    spacing: 8px;
+                    Text {
+                        text: "Nota";
+                        color: #f2f2f2;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: root.info;
+                        color: #c8cad0;
+                        wrap: word-wrap;
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    Text {
+                        text: "Áudio";
+                        color: #f2f2f2;
+                        font-weight: 700;
+                    }
+                    Text {
+                        text: "Saída";
+                        color: #9fa2a8;
+                        font-size: 11px;
+                    }
+                    ComboBox {
+                        model: root.dispositivos;
+                        current-index <=> root.dispositivo-atual;
+                        selected(nome) => { root.escolher-dispositivo(nome); }
+                    }
+                    Text {
+                        text: "Volume: " + round(root.volume) + "%";
+                        color: #9fa2a8;
+                        font-size: 11px;
+                    }
+                    Slider {
+                        minimum: 0;
+                        maximum: 150;
+                        value <=> root.volume;
+                        changed(v) => { root.mudar-volume(v); }
+                    }
+                }
+            }
+        }
+
+        // painel inferior: velocity e sustain
+        HorizontalLayout {
+            height: 132px;
+            VerticalLayout {
+                width: 64px;
+                Rectangle {
+                    height: 96px;
+                    background: #26272b;
+                    Text {
+                        text: "Velocity";
+                        color: #b8bac0;
+                        font-size: 11px;
+                    }
+                }
+                Rectangle {
+                    height: 36px;
+                    background: #26272b;
+                    Text {
+                        text: "Sustain";
+                        color: #b8bac0;
+                        font-size: 11px;
+                    }
+                }
+            }
+            VerticalLayout {
+                Rectangle {
+                    height: 96px;
+                    background: #1f2023;
+                    clip: true;
+                    for l in root.linhas: Rectangle {
+                        visible: l.peso == 2;
+                        x: l.x;
+                        y: 0px;
+                        width: 1px;
+                        height: parent.height;
+                        background: #3c3e44;
+                    }
+                    for b in root.barras: Rectangle {
+                        x: b.x;
+                        y: parent.height - 6px - (parent.height - 12px) * b.nivel;
+                        width: 3px;
+                        height: (parent.height - 12px) * b.nivel + 6px;
+                        background: b.cor;
+                        Rectangle {
+                            x: -2px;
+                            y: 0px;
+                            width: 7px;
+                            height: 4px;
+                            background: b.selecionada ? #ffffff : b.cor;
+                        }
+                    }
+                    if root.playhead-visivel: Rectangle {
+                        x: root.playhead-x - 1px;
+                        width: 2px;
+                        background: #f0c040;
+                    }
+                }
+                Rectangle {
+                    height: 36px;
+                    background: #1a1b1e;
+                    clip: true;
+                    for p in root.pedais: Rectangle {
+                        x: p.x;
+                        y: 9px;
+                        width: p.w;
+                        height: 18px;
+                        border-radius: 3px;
+                        background: #3f6fa8;
+                    }
+                    if root.playhead-visivel: Rectangle {
+                        x: root.playhead-x - 1px;
+                        width: 2px;
+                        background: #f0c040;
+                    }
+                }
+            }
+            Rectangle {
+                width: 230px;
+                background: #26272b;
+                Text {
+                    x: 12px;
+                    width: parent.width - 24px;
+                    text: root.mensagem;
+                    color: #9fa2a8;
+                    font-size: 11px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        }
+    }
+}

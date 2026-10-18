@@ -44,6 +44,10 @@ enum Modo {
     Render,
     Bench,
     Listar,
+    /// piano roll em janela
+    Gui,
+    /// piano roll desenhado sem janela, salvo em PNG
+    Captura,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -62,6 +66,11 @@ struct Opcoes {
     partitura: String,
     /// arquivo MusicXML para o player tocar
     musicxml: Option<PathBuf>,
+    /// PNG da captura do piano roll e posição do playhead (semínimas)
+    captura: PathBuf,
+    posicao: Option<f64>,
+    /// modo do painel da partitura na captura
+    modo_partitura: i32,
     /// humanização do player (0 = exato)
     humanizar: f32,
     modelo: Modelo,
@@ -95,6 +104,12 @@ uso: piano [opções]
                         combina com --nota, --demo e --pedais)
   --bench               mede o tempo de síntese no pior caso (32 vozes)
   --listar              lista os dispositivos de saída
+  --gui                 piano roll (com --musicxml ou --partitura; sem
+                        eles, abre exemplos/ode.musicxml)
+  --gui-captura x.png   desenha o piano roll sem janela e salva em PNG
+  --gui-posicao 12.5    posição do playhead na captura, em semínimas
+  --gui-partitura modo  painel da partitura na captura: oculta, compacta,
+                        expandida ou cheia
   --modelo modal|guia   simulação da corda: soma de senoides (modal) ou
                         guia de onda digital
   --sem-tampo           só o som das cordas
@@ -113,6 +128,9 @@ fn ler_opcoes() -> Result<Opcoes, String> {
         roteiro: None,
         partitura: String::new(),
         musicxml: None,
+        captura: PathBuf::new(),
+        posicao: None,
+        modo_partitura: 1,
         humanizar: 0.5,
         modelo: Modelo::Modal,
         wav: PathBuf::new(),
@@ -145,6 +163,21 @@ fn ler_opcoes() -> Result<Opcoes, String> {
             "--humanizar" => op.humanizar = valor()?.parse().map_err(|_| "--humanizar inválido")?,
             "--bench" => op.modo = Modo::Bench,
             "--listar" => op.modo = Modo::Listar,
+            "--gui" => op.modo = Modo::Gui,
+            "--gui-captura" => {
+                op.modo = Modo::Captura;
+                op.captura = valor()?.into();
+            }
+            "--gui-partitura" => {
+                op.modo_partitura = match valor()?.as_str() {
+                    "oculta" => 0,
+                    "compacta" => 1,
+                    "expandida" => 2,
+                    "cheia" => 3,
+                    m => return Err(format!("modo da partitura desconhecido: {m}")),
+                }
+            }
+            "--gui-posicao" => op.posicao = Some(valor()?.parse().map_err(|_| "--gui-posicao inválido")?),
             "--render" => {
                 render = true;
                 op.wav = valor()?.into();
@@ -180,7 +213,9 @@ fn ler_opcoes() -> Result<Opcoes, String> {
             _ => return Err(format!("opção desconhecida: {a}\n{USO}")),
         }
     }
-    if render {
+    if matches!(op.modo, Modo::Gui | Modo::Captura) {
+        // a interface escolhe o que mostrar; o roteiro não importa
+    } else if render {
         op.modo = Modo::Render;
         op.roteiro.get_or_insert(QualRoteiro::Teclas);
     } else if op.roteiro.is_some() && op.modo == Modo::Interativo {
@@ -194,14 +229,25 @@ fn marcos_em_linhas(op: &Opcoes) -> bool {
     matches!(op.roteiro, Some(QualRoteiro::Pedais | QualRoteiro::Partitura))
 }
 
+/// A partitura pedida: um MusicXML, um exemplo embutido ou (na interface,
+/// sem nenhum dos dois) o exemplo da Ode à Alegria.
+/// Também devolve o texto do MusicXML, quando a peça vem de um arquivo.
+fn carregar_partitura(op: &Opcoes) -> Result<(partitura::Partitura, Option<String>), String> {
+    let padrao = PathBuf::from("exemplos/ode.musicxml");
+    let arquivo = op.musicxml.clone().or_else(|| {
+        (op.partitura.is_empty() && matches!(op.modo, Modo::Gui | Modo::Captura)).then_some(padrao)
+    });
+    match arquivo {
+        Some(arquivo) => Ok((musicxml::ler(&arquivo)?, std::fs::read_to_string(&arquivo).ok())),
+        None => partitura::exemplo(&op.partitura).map(|p| (p, None)).ok_or_else(|| {
+            format!("partitura desconhecida: {} (exemplos: {})", op.partitura, partitura::EXEMPLOS.join(", "))
+        }),
+    }
+}
+
 /// O player toca a partitura; mostra o que ele precisou adaptar.
 fn tocar_partitura(op: &Opcoes) -> Result<Roteiro, String> {
-    let p = match &op.musicxml {
-        Some(arquivo) => musicxml::ler(arquivo)?,
-        None => partitura::exemplo(&op.partitura).ok_or_else(|| {
-            format!("partitura desconhecida: {} (exemplos: {})", op.partitura, partitura::EXEMPLOS.join(", "))
-        })?,
-    };
+    let (p, _) = carregar_partitura(op)?;
     let player = Player { humanizacao: op.humanizar, ..Player::default() };
     let e = player.tocar(&p, TAXA);
     println!("{}  (humanização {})", p.titulo, op.humanizar);
@@ -209,6 +255,15 @@ fn tocar_partitura(op: &Opcoes) -> Result<Roteiro, String> {
         println!("  aviso: {a}");
     }
     Ok(e.roteiro)
+}
+
+/// Partitura e a execução do player, para a interface.
+#[cfg(feature = "gui")]
+fn peca(op: &Opcoes) -> Result<cancao::gui::Peca, String> {
+    let (partitura, fonte) = carregar_partitura(op)?;
+    let player = Player { humanizacao: op.humanizar, ..Player::default() };
+    let execucao = player.tocar(&partitura, TAXA);
+    Ok(cancao::gui::Peca { partitura, execucao, fonte })
 }
 
 fn fazer_roteiro(op: &Opcoes) -> Result<Roteiro, String> {
@@ -362,6 +417,9 @@ fn clonar(op: &Opcoes) -> Opcoes {
         roteiro: op.roteiro,
         partitura: op.partitura.clone(),
         musicxml: op.musicxml.clone(),
+        captura: op.captura.clone(),
+        posicao: op.posicao,
+        modo_partitura: op.modo_partitura,
         humanizar: op.humanizar,
         modelo: op.modelo,
         segurar_s: op.segurar_s,
@@ -404,6 +462,16 @@ fn main() -> ExitCode {
         }
         Modo::Render => render_wav(&op),
         Modo::Bench => benchmark(&op),
+        #[cfg(feature = "gui")]
+        Modo::Captura => peca(&op).and_then(|p| cancao::gui::capturar(p, &op.captura, op.posicao, op.modo_partitura, 1400, 860)),
+        #[cfg(feature = "gui")]
+        Modo::Gui => peca(&op).and_then(|p| {
+            let op_motor = clonar(&op);
+            let fabrica: cancao::gui::FabricaMotor = Box::new(move || fazer_motor(&op_motor));
+            cancao::gui::rodar(p, fabrica, op.modelo == Modelo::Guia, TAXA, &op.dispositivo, op.latencia_us, op.humanizar)
+        }),
+        #[cfg(not(feature = "gui"))]
+        Modo::Gui | Modo::Captura => Err("compilado sem interface (feature \"gui\")".into()),
         _ => tempo_real::rodar(&op),
     };
     match r {

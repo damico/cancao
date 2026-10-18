@@ -11,9 +11,14 @@ name = "piano"
 path = "src/main.rs"
 
 [features]
-default = ["audio"]
+default = ["audio", "gui", "partitura"]
 # saída de áudio em tempo real; sem ela, só --tabela, --render e --bench
 audio = ["dep:cpal"]
+# piano roll em Slint (--gui)
+gui = ["audio", "dep:slint", "dep:png", "dep:slint-build", "dep:rfd"]
+# partitura tradicional no painel (Verovio, LGPL-3.0, compilado junto; a
+# primeira compilação baixa e compila o Verovio, ~10 min)
+partitura = ["gui", "dep:verovioxide", "dep:verovioxide-data", "dep:resvg", "dep:woofwoof", "dep:base64", "dep:serde_json"]
 
 [dependencies]
 cpal = { version = "0.15.3", optional = true }
@@ -21,6 +26,19 @@ rtrb = "0.3.1"
 crossterm = "0.28.1"
 libc = "0.2"
 roxmltree = "0.20.0"
+slint = { version = "1.18.1", optional = true, features = ["renderer-software"] }
+png = { version = "0.17.16", optional = true }
+# diálogo de abrir arquivo do sistema (no Linux, pelo xdg-desktop-portal)
+rfd = { version = "0.17.2", optional = true }
+verovioxide = { version = "0.3.0", optional = true }
+verovioxide-data = { version = "0.3.0", optional = true }
+resvg = { version = "0.48.1", optional = true }
+woofwoof = { version = "1.0.2", optional = true }
+base64 = { version = "0.22.1", optional = true }
+serde_json = { version = "1", optional = true }
+
+[build-dependencies]
+slint-build = { version = "1.18.1", optional = true }
 
 [profile.release]
 codegen-units = 1

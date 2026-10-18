@@ -22,11 +22,12 @@
 //!   `duration`, pausas, `chord`, `backup` e `forward`;
 //! - `staff`: 1 = pauta de cima (mão direita), 2 = pauta de baixo; sem
 //!   `staff`, a 1ª parte vai para cima e as outras para baixo;
+//! - `voice` (vozes do contraponto) e fórmula de compasso (`time`);
 //! - ligaduras de prolongamento (`tie` start/stop): as notas viram uma só;
 //! - andamento (`sound tempo`), dinâmicas (`pppp` a `ffff`) e pedal de
 //!   sustain (`pedal` start/stop/change).
 //!
-//! Ignora (sem erro): `voice`, `grace`, ornamentos, articulações, repetições,
+//! Ignora (sem erro): `grace`, ornamentos, articulações, repetições,
 //! `offset` de direções, letras e tudo de diagramação. Não lê `score-timewise`
 //! nem o formato comprimido `.mxl`.
 
@@ -40,7 +41,11 @@ use crate::partitura::{Nota, Partitura, Pauta};
 
 pub fn ler(caminho: &Path) -> Result<Partitura, String> {
     let texto = std::fs::read_to_string(caminho).map_err(|e| format!("{}: {e}", caminho.display()))?;
-    de_texto(&texto).map_err(|e| format!("{}: {e}", caminho.display()))
+    let mut p = de_texto(&texto).map_err(|e| format!("{}: {e}", caminho.display()))?;
+    if p.titulo.is_empty() {
+        p.titulo = caminho.file_stem().map_or("(sem título)".into(), |n| n.to_string_lossy().into_owned());
+    }
+    Ok(p)
 }
 
 /// Filho com este nome.
@@ -82,10 +87,17 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
         return Err(format!("esperado score-partwise, veio {}", raiz.tag_name().name()));
     }
 
+    // título: da obra, do movimento ou o texto impresso como título na página
+    let credito = || {
+        let creditos: Vec<Node> = raiz.children().filter(|c| c.has_tag_name("credit")).collect();
+        let do_tipo_titulo = creditos.iter().find(|c| texto_de(**c, "credit-type").as_deref() == Some("title"));
+        do_tipo_titulo.or(creditos.first()).and_then(|c| texto_de(*c, "credit-words"))
+    };
     let titulo = filho(raiz, "work")
         .and_then(|w| texto_de(w, "work-title"))
         .or_else(|| texto_de(raiz, "movement-title"))
-        .unwrap_or_else(|| "(sem título)".into());
+        .or_else(credito)
+        .unwrap_or_default();
     let mut p = Partitura { titulo, ..Partitura::default() };
 
     for (i_parte, parte) in raiz.children().filter(|c| c.has_tag_name("part")).enumerate() {
@@ -100,11 +112,27 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
         let mut ligadas: HashMap<(u8, Pauta), usize> = HashMap::new();
 
         for compasso in parte.children().filter(|c| c.has_tag_name("measure")) {
+            if i_parte == 0 {
+                p.inicios_compasso.push(cursor);
+            }
+            // o compasso termina no ponto mais à frente que alguma voz alcançou
+            // (uma voz incompleta no fim não pode adiantar o compasso seguinte)
+            let mut maximo = cursor;
             for el in compasso.children().filter(|c| c.is_element()) {
+                maximo = f64::max(maximo, cursor);
                 match el.tag_name().name() {
                     "attributes" => {
                         if let Some(d) = numero(el, "divisions") {
                             divisoes = d;
+                        }
+                        if let Some(t) = filho(el, "time") {
+                            let tempos = texto_de(t, "beats").and_then(|b| b.parse().ok());
+                            let unidade = texto_de(t, "beat-type").and_then(|b| b.parse().ok());
+                            if let (Some(tempos), Some(unidade)) = (tempos, unidade) {
+                                if i_parte == 0 && p.compassos.last().is_none_or(|c| c.0 < cursor) {
+                                    p.compassos.push((cursor, tempos, unidade));
+                                }
+                            }
                         }
                     }
                     "backup" => cursor -= numero(el, "duration").unwrap_or(0.0) / divisoes,
@@ -191,7 +219,8 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
                                 continue;
                             }
                         }
-                        p.notas.push(Nota { inicio, duracao: dur, tecla, pauta, dinamica: forca });
+                        let voz = texto_de(el, "voice").and_then(|v| v.parse().ok()).unwrap_or(if pauta == Pauta::Superior { 1 } else { 5 });
+                        p.notas.push(Nota { inicio, duracao: dur, tecla, pauta, dinamica: forca, voz });
                         if ties.contains(&"start") {
                             ligadas.insert((tecla, pauta), p.notas.len() - 1);
                         }
@@ -199,6 +228,7 @@ pub fn de_texto(xml: &str) -> Result<Partitura, String> {
                     _ => {}
                 }
             }
+            cursor = f64::max(maximo, cursor);
         }
         if let Some(d) = pedal_desde {
             p.pedais.push((d, cursor)); // pedal não solto até o fim
@@ -229,6 +259,9 @@ mod testes {
         assert_eq!(p.notas.len(), 60);
         assert_eq!(p.notas.iter().filter(|n| n.pauta == Pauta::Superior).count(), 30);
         assert_eq!(p.andamentos, [(0.0, 100.0)]);
+        assert_eq!(p.compassos, [(0.0, 4, 4)]);
+        // vozes: 1 na pauta de cima, 5 na de baixo
+        assert!(p.notas.iter().all(|n| n.voz == if n.pauta == Pauta::Superior { 1 } else { 5 }));
         // pedal: abaixa no 1º compasso, troca em cada um dos 8 seguintes
         assert_eq!(p.pedais.len(), 9);
         assert_eq!(p.pedais[0], (0.0, 4.0));
@@ -261,6 +294,16 @@ mod testes {
     fn erros_claros() {
         assert!(de_texto("<score-timewise/>").unwrap_err().contains("score-partwise"));
         assert!(de_texto("<score-partwise>").unwrap_err().contains("XML inválido"));
+    }
+
+    #[test]
+    fn titulo_pelo_credito_impresso() {
+        let xml = r#"<score-partwise><credit page="1"><credit-words>Sonata in B Minor</credit-words></credit>
+            <credit page="1"><credit-words>Franz Liszt</credit-words></credit></score-partwise>"#;
+        assert_eq!(de_texto(xml).unwrap().titulo, "Sonata in B Minor");
+        let xml = r#"<score-partwise><credit><credit-words>Autor</credit-words></credit>
+            <credit><credit-type>title</credit-type><credit-words>Prelúdio</credit-words></credit></score-partwise>"#;
+        assert_eq!(de_texto(xml).unwrap().titulo, "Prelúdio");
     }
 
     #[test]

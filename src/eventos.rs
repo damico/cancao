@@ -41,6 +41,10 @@ pub enum Evento {
     AlternarTampo,
     /// troca o modelo de corda (modal ↔ guia de onda) para as próximas notas
     AlternarModelo,
+    /// descarta os eventos ainda não aplicados (pausar, saltar de posição)
+    CancelarAgendados,
+    /// volume geral; 1 = padrão
+    Volume { valor: f32 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -1,4 +1,4 @@
-# cancao: piano digital por modelagem física (Rust)
+# Canção: Um piano digital por modelagem física
 
 Sintetiza as 88 teclas de um piano (A0-C8) a partir da física da corda:
 
@@ -22,9 +22,13 @@ interface gráfica será feita em [Slint](https://slint.dev).
 
 ## Compilar
 
-    sudo apt install libasound2-dev pkg-config   # só no Linux, uma vez
+    sudo apt install libasound2-dev libfontconfig1-dev pkg-config   # só no Linux, uma vez
     cargo build --release
     cargo test --release
+
+Sem a interface gráfica (dispensa o `libfontconfig1-dev`):
+
+    cargo build --release --no-default-features --features audio
 
 Sem os headers do ALSA, dá para compilar só a parte offline
 (`--tabela`, `--render`, `--bench`):
@@ -55,6 +59,102 @@ Variações úteis:
 
 Qualquer arquivo `.musicxml` não comprimido funciona, dentro do recorte
 descrito em [MusicXML](#musicxml).
+
+## Interface: piano roll
+
+![Piano roll com a partitura compacta: notas que soam em dourado nas duas vistas, dedo de cada nota, inspetor, velocity e sustain](docs/piano-roll.png)
+
+    ./target/release/piano --gui                               # abre exemplos/ode.musicxml
+    ./target/release/piano --gui --musicxml arq.musicxml       # qualquer MusicXML
+    ./target/release/piano --gui --partitura acordes           # exemplos embutidos
+
+Visualizador temporal da partitura tocada pelo player, inspirado no piano
+roll de DAWs, em [Slint](https://slint.dev):
+
+- barra superior: abrir, tocar, pausar, parar, andamento, posição (compasso e
+  tempo), fórmula de compasso, zoom, grade, legenda de cores, cores por voz
+  ou por mão, modelo de corda;
+- régua de compassos (clique para ir para aquele ponto);
+- teclado vertical das 88 teclas (as que soam ficam douradas);
+- roll: cada nota com a cor da voz (ou da mão) e o dedo escolhido pelo
+  player; as já tocadas ficam apagadas, as que soam brilham; playhead
+  dourado;
+- inspetor: nota, frequência, compasso, duração, voz, mão, dedo, velocity;
+- áudio: escolha da saída (placa de som) e volume de 0 a 150%;
+- faixas de velocity (força tocada pelo player) e de sustain.
+
+| gesto                 | efeito                                 |
+|-----------------------|----------------------------------------|
+| roda                  | rolar as teclas                        |
+| Shift + roda          | andar no tempo                         |
+| Ctrl + roda           | zoom no tempo, no ponto do cursor      |
+| botões - e +          | zoom no tempo, 25% por clique          |
+| Ctrl + Shift + roda   | altura das linhas das teclas           |
+| clique na régua       | ir para o ponto (tocando ou não)       |
+| clique numa nota      | detalhes no inspetor                   |
+| botão Abrir           | escolher um `.musicxml`/`.xml` e tocar |
+| Áudio, Saída          | trocar a placa de som (pausa; Tocar continua dali) |
+| Áudio, Volume         | volume geral, na hora                  |
+
+O botão **Abrir** usa o diálogo de arquivos do sistema (no Linux, o do
+`xdg-desktop-portal`, que o Ubuntu já traz; no macOS, o nativo). A peça
+aberta passa pelo player e começa a tocar; se o arquivo não puder ser lido,
+a peça atual continua e o erro aparece no painel inferior direito.
+
+O relógio do áudio manda: a cada quadro (16 ms) a interface lê a posição do
+motor e desenha o playhead ali. Só as notas dentro da área visível são
+entregues ao Slint (viewport culling), e os eventos vão para o motor só 2 s
+à frente, então obras longas não enchem a fila. Sem dispositivo de áudio a
+interface funciona igual, sem som.
+
+### Partitura tradicional (Live Score Panel)
+
+![Partitura expandida sobre o piano roll, sincronizadas](docs/partitura-expandida.png)
+
+![Partitura em tela cheia](docs/partitura-tela-cheia.png)
+
+Acima do piano roll fica a partitura tradicional (claves, compassos,
+ligaduras, pausas, dinâmicas, articulações), gravada pelo
+[Verovio](https://www.verovio.org) a partir do mesmo MusicXML e sincronizada
+com o mesmo relógio do motor de áudio:
+
+- **Ocultar / Compacto / Expandir / Tela cheia**: o compacto mostra o
+  sistema atual; o expandido, vários (arraste a divisória para ajustar); a
+  tela cheia esconde o piano roll. Trocar de modo nunca interrompe o som.
+- **Seguir execução**: a partitura acompanha o playhead sistema a sistema,
+  mostrando o próximo antes de a linha acabar; também segue os saltos.
+- **- / +**: tamanho da notação (a partitura é diagramada de novo).
+- As notas que soam ficam em dourado; a selecionada, em azul.
+- **Navegação nos dois sentidos**: clicar numa nota da partitura leva o
+  playhead (e o roll) até ela; clicar numa nota do roll a seleciona e a
+  mostra na partitura.
+
+Como funciona: ao abrir a peça, o Verovio diagrama a partitura numa thread
+à parte (a Sonata de Liszt, 129 sistemas, leva cerca de 1,5 s), um SVG por
+sistema; nada é redesenhado a cada nota. Os sistemas são rasterizados com
+`resvg` só quando aparecem, e ficam em cache. Cada nota desenhada é ligada à
+nota que o player toca por (compasso, posição no compasso, tecla), o que
+mantém a ligação mesmo quando o Verovio e o nosso leitor discordam de alguma
+duração no arquivo: na Sonata de Liszt, 94,5% das notas desenhadas ficam
+ligadas (as demais são ornamentos e notas que o leitor simplificado ignora).
+
+**Licença do Verovio**: o Verovio é LGPL-3.0 e é compilado junto com o
+programa (pelo `verovioxide`, Apache-2.0). Quem distribuir binários com a
+partitura precisa permitir trocar o Verovio por outra versão (o código do
+cancao é público e compila pelo Cargo, o que atende a isso). Para um binário
+só com código Apache, compile sem a feature `partitura`:
+
+    cargo build --release --no-default-features --features gui
+
+A primeira compilação com a partitura baixa o código do Verovio do GitHub e
+o compila (cerca de 10 minutos); as seguintes usam o cache.
+
+Captura sem janela (renderizador por software do Slint), útil para
+documentação e testes (as imagens deste README foram geradas assim, com
+`exemplos/ode.musicxml`):
+
+    ./target/release/piano --gui-captura roll.png --gui-posicao 9.5   # playhead na semínima 9,5
+    ./target/release/piano --gui-captura roll.png --gui-partitura expandida   # oculta, compacta, expandida, cheia
 
 ## Usar
 
@@ -224,6 +324,12 @@ eventos internos (`eventos::de_midi`), para quando houver entrada MIDI.
 | `src/musicxml.rs` | leitor simplificado de MusicXML 4.0                        |
 | `src/player.rs`  | o pianista: mãos, corpo, tempo, força, pé                  |
 | `src/dedilhado.rs` | dedilhado pelo modelo ergonômico de Parncutt            |
+| `src/gui/linha_do_tempo.rs` | posições, zoom, grade e o que está visível (testável sem janela) |
+| `src/gui/transporte.rs` | tocar, pausar, parar e saltar, alimentando o motor aos poucos |
+| `src/gui/mod.rs` | liga a interface ao player e ao motor; captura em PNG     |
+| `ui/piano_roll.slint` | componentes visuais do piano roll e do painel da partitura |
+| `src/notacao.rs` | partitura pelo Verovio: sistemas, posições das notas, ligação com a `Partitura` |
+| `src/gui/painel.rs` | painel da partitura: diagramação em segundo plano, cache, rolagem |
 | `src/motor.rs`   | agenda eventos por quadro, blocos de 128, medição de tempo |
 | `src/synth.rs`   | instrumento: vozes, teclas, abafadores, pedais, cavalete e tampo |
 | `src/modal.rs`   | corda por síntese modal (48 parciais × 3 cordas)            |
@@ -254,7 +360,7 @@ contém o instante (resolução de 2,7 ms).
 3. Guia de onda digital (corda simulada como ondas viajantes), em andamento
 4. ~~Partitura + MusicXML 4.0 simplificado~~ (versão inicial)
 5. ~~Player: duas mãos, cinco dedos (dedilhado, tempo, dinâmica)~~ (versão inicial)
-6. GUI em Slint
+6. ~~GUI em Slint~~ (piano roll, primeira versão: visualização e transporte)
 7. Pé nos pedais, interpretação mais humana
 
 ## Pendências
@@ -355,9 +461,51 @@ feitas durante o desenvolvimento.
   articulações (staccato, acento) e vozes; dinâmicas valem para a parte toda
   (as duas pautas) e não há crescendo gradual (`wedge`).
 
+### Interface (piano roll)
+
+- **Primeira versão só visualiza:** editar notas (arrastar altura e posição,
+  mudar duração com quantização) e desenhar velocity e pedal ficam para a
+  segunda etapa.
+- **Saídas de áudio:** a lista é a do `cpal`; no Linux ela inclui
+  dispositivos `hw:`/`plughw:` que o PipeWire costuma manter ocupados (dão
+  erro ao escolher) e entradas sem uso prático. A escolha e o volume não são
+  lembrados entre execuções.
+- **Abrir arquivo:** o diálogo bloqueia a interface enquanto está aberto
+  (a reprodução é pausada antes); não há arrastar e soltar nem lista de
+  arquivos recentes; `.mxl` comprimido não abre.
+- **Interação não testada automaticamente:** rolagem, zoom, cliques e a
+  sincronia do playhead com o som foram conferidos só pelas capturas e por
+  abrir a janela; o sentido da roda pode estar invertido em algum sistema.
+- **Tempo em semínimas (f64):** quiálteras e divisões complexas do MusicXML
+  ficam com arredondamento; uma representação racional (ticks) seria mais
+  exata.
+- **Notas escritas, não tocadas:** o roll mostra a posição escrita; a
+  humanização do player (alguns ms) não aparece.
+- **Obras muito grandes:** os modelos do Slint são refeitos quando algo
+  visível muda; com dezenas de milhares de notas na tela pode ser preciso
+  rasterizar as camadas fixas em imagem.
+- **Camada das cordas vibrando** (o diferencial planejado: mostrar o que
+  ainda soa pelo pedal e pelo modelo físico) ainda não existe.
+
+### Partitura tradicional
+
+- **Repetições, casas de 1ª e 2ª vez:** nem o leitor nem o Verovio (como
+  configurado) expandem repetições; a partitura e a execução tocam o que está
+  escrito, uma vez.
+- **Notas não ligadas:** ornamentos e notas que o leitor simplificado ignora
+  aparecem na partitura mas não são destacadas nem clicáveis para navegar.
+  Nas 235 partituras da ASAP dataset: média de 98,5% das notas desenhadas
+  ligadas (mediana 99,8%); as piores são a Mephisto Waltz de Liszt (52,7%) e
+  a Sonata Hob. XVI:39/2 de Haydn (77,5%), ainda não investigadas.
+- **Diagramação:** o Verovio às vezes sobrepõe textos (número do compasso e
+  indicação de andamento no início do sistema); a divisória do modo
+  expandido não é lembrada entre execuções.
+- **Primeira compilação lenta** (o Verovio em C++, ~10 min) e a licença
+  LGPL-3.0 do Verovio para quem distribuir binários (ver acima).
+
 ### Próximas etapas do roteiro
 
-A GUI em Slint ainda não começou.
+Segunda etapa da interface (edição) e a camada das cordas vibrando.
 
 ## Licença
 

@@ -47,6 +47,8 @@ pub const DESAFINO_UNISSONO: [f32; MAX_UNISSONO] = [0.0, 0.9, -0.6];
 pub const SIMPATIA_UNA_CORDA: f32 = 0.12;
 /// s, com o abafador totalmente encostado
 pub const TAU_ABAFADO: f32 = 0.08;
+/// ganho de saída com o volume em 100%
+pub const VOLUME_PADRAO: f32 = 0.8;
 /// do F#6 para cima não há abafadores
 const TECLA_SEM_ABAFADOR: usize = 70;
 
@@ -144,7 +146,7 @@ impl Synth {
             vozes: vec![Voz::default(); MAX_VOZES].into_boxed_slice().try_into().ok().unwrap(),
             relogio: 0,
             modelo: Modelo::Modal,
-            volume: 0.8,
+            volume: VOLUME_PADRAO,
             tampo_ligado: tampo.is_some(),
             tampo,
             pressionadas: [false; NUM_TECLAS],

@@ -286,7 +286,10 @@ pub fn dedilhar(mao: Mao, momentos: &[Vec<u8>]) -> Vec<Posicao> {
             teclas.dedup();
             let mut toques: Vec<Toque> = teclas.iter().map(|&t| toque(mao, t)).collect();
             toques.sort_by_key(|t| t.altura);
-            (teclas, toques, combinacoes(m.len().clamp(1, 5)))
+            // a mesma tecla em duas vozes é abaixada uma vez só: os dedos são
+            // escolhidos para as teclas distintas
+            let k = teclas.len().clamp(1, 5);
+            (teclas, toques, combinacoes(k))
         })
         .collect();
 
@@ -457,6 +460,14 @@ mod testes {
         }
         let p = dedilhar(Mao::Direita, &[vec![c("F4"), c("A4"), c("C5")]]);
         assert_eq!(p[0].dedos, [1, 3, 5]);
+    }
+
+    #[test]
+    fn mesma_tecla_em_duas_vozes() {
+        let c = |n| tecla_de_nome(n).unwrap() as u8;
+        let p = dedilhar(Mao::Direita, &[vec![c("C4"), c("E4"), c("E4")], vec![c("D4")]]);
+        assert_eq!(p[0].teclas, [c("C4"), c("E4")]);
+        assert_eq!(p[0].dedos.len(), 2);
     }
 
     #[test]

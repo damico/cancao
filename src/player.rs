@@ -51,7 +51,7 @@ const FOLGA_S: f64 = 0.008;
 /// O pé abaixa o pedal este tempo depois do início marcado (s).
 const ATRASO_PEDAL_S: f64 = 0.06;
 /// Tudo começa um pouco depois de zero, para a humanização poder adiantar.
-const INICIO_S: f64 = 0.05;
+pub const INICIO_S: f64 = 0.05;
 
 pub struct Player {
     /// 0 = exato e repetível; 1 = variações de um pianista humano
@@ -78,6 +78,8 @@ pub struct NotaTocada {
     pub vel: f32,
     /// tempo escrito (semínimas), para relatórios
     pub tempo: f64,
+    /// índice da nota escrita em `Partitura::notas`
+    pub indice: usize,
 }
 
 pub struct Execucao {
@@ -147,7 +149,14 @@ impl Player {
                 let base = INICIO_S + p.segundos(tempo) + 0.010 * h * acaso.normal();
                 let aguda = *pos.teclas.last().unwrap();
                 for (k, (&tecla, &dedo)) in pos.teclas.iter().zip(&pos.dedos).enumerate() {
-                    let nota = idx.iter().map(|&i| &p.notas[i]).find(|n| n.tecla == tecla).unwrap();
+                    // a mesma tecla escrita em duas vozes é tocada uma vez,
+                    // segurada pela maior das durações
+                    let indice = *idx
+                        .iter()
+                        .filter(|&&i| p.notas[i].tecla == tecla)
+                        .max_by(|&&a, &&b| p.notas[a].duracao.total_cmp(&p.notas[b].duracao))
+                        .unwrap();
+                    let nota = &p.notas[indice];
                     let arpejo = if pos.cabe { 0.0 } else { ARPEJO_S * k as f64 };
                     let inicio_s = (base + arpejo + 0.003 * h * acaso.normal()).max(0.0);
                     let escrito = p.segundos(nota.inicio + nota.duracao) - p.segundos(nota.inicio);
@@ -161,6 +170,7 @@ impl Player {
                         dedo,
                         vel,
                         tempo,
+                        indice,
                     });
                 }
             }
@@ -339,6 +349,17 @@ mod testes {
         let c4 = e.notas.iter().find(|n| n.tecla == corda::tecla_de_nome("C4").unwrap() as u8 && n.tempo == 0.0).unwrap();
         let e5 = e.notas.iter().find(|n| n.tecla == corda::tecla_de_nome("E5").unwrap() as u8).unwrap();
         assert!((e5.inicio_s - c4.inicio_s - ARPEJO_S).abs() < 1e-9);
+    }
+
+    #[test]
+    fn mesma_tecla_em_duas_vozes_e_tocada_uma_vez() {
+        use crate::partitura::{Nota, Pauta};
+        let n = |tecla, duracao, voz| Nota { inicio: 0.0, duracao, tecla, pauta: Pauta::Superior, dinamica: 0.5, voz };
+        let p = Partitura { notas: vec![n(40, 1.0, 1), n(40, 3.0, 2), n(44, 1.0, 1)], ..Partitura::default() };
+        let e = exato().tocar(&p, TAXA);
+        assert_eq!(e.notas.len(), 2);
+        let mi = e.notas.iter().find(|t| t.tecla == 40).unwrap();
+        assert_eq!(mi.indice, 1, "segura pela maior duração");
     }
 
     #[test]

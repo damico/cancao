@@ -21,10 +21,14 @@ pub mod corda;
 pub mod dedilhado;
 pub mod eventos;
 pub mod guia;
+#[cfg(feature = "gui")]
+pub mod gui;
 pub mod martelo;
 pub mod modal;
 pub mod motor;
 pub mod musicxml;
+#[cfg(feature = "partitura")]
+pub mod notacao;
 pub mod partitura;
 pub mod player;
 pub mod roteiro;

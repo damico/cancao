@@ -24,7 +24,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering::Relaxed};
 use std::time::Instant;
 
 use crate::eventos::{Evento, EventoAgendado, Pedal};
-use crate::synth::{BLOCO, Modelo, Synth};
+use crate::synth::{BLOCO, Modelo, Synth, VOLUME_PADRAO};
 
 const MAX_PENDENTES: usize = 4096;
 
@@ -118,7 +118,9 @@ impl Motor {
 
     /// Fila cheia descarta o evento (nunca aloca no tempo real).
     pub fn agendar(&mut self, ev: EventoAgendado) {
-        if self.pendentes.len() < MAX_PENDENTES {
+        if ev.evento == Evento::CancelarAgendados {
+            self.pendentes.clear();
+        } else if self.pendentes.len() < MAX_PENDENTES {
             self.pendentes.push(ev);
         }
     }
@@ -133,6 +135,8 @@ impl Motor {
                 self.synth.tampo_ligado = self.synth.tem_tampo() && !self.synth.tampo_ligado;
                 self.estado.tampo_ligado.store(self.synth.tampo_ligado, Relaxed);
             }
+            Evento::CancelarAgendados => {}
+            Evento::Volume { valor } => self.synth.volume = VOLUME_PADRAO * valor.clamp(0.0, 2.0),
             Evento::AlternarModelo => {
                 self.synth.modelo = match self.synth.modelo {
                     Modelo::Modal => Modelo::Guia,
@@ -321,6 +325,28 @@ mod testes {
         let inicio_bloco = 4800 / BLOCO * BLOCO;
         assert!(s[..2 * inicio_bloco].iter().all(|&x| x == 0.0), "som antes da hora");
         assert!(s[2 * inicio_bloco..2 * (inicio_bloco + BLOCO)].iter().any(|&x| x != 0.0));
+    }
+
+    #[test]
+    fn cancelar_descarta_o_que_ainda_nao_tocou() {
+        let mut m = motor();
+        m.agendar(EventoAgendado { quadro: 9600, evento: Evento::NotaOn { tecla: 40, vel: 0.8 } });
+        m.agendar(EventoAgendado::agora(Evento::CancelarAgendados));
+        let s = tocar(&mut m, 0.5);
+        assert!(s.iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn volume_escala_o_som() {
+        let nivel = |volume: f32| {
+            let mut m = motor();
+            m.agendar(EventoAgendado::agora(Evento::Volume { valor: volume }));
+            m.agendar(EventoAgendado::agora(Evento::NotaOn { tecla: 40, vel: 0.3 }));
+            rms(&tocar(&mut m, 0.3), 0.0, 0.3)
+        };
+        let (cheio, metade, mudo) = (nivel(1.0), nivel(0.5), nivel(0.0));
+        assert!((metade / cheio - 0.5).abs() < 0.02, "{metade} / {cheio}");
+        assert_eq!(mudo, 0.0);
     }
 
     #[test]
