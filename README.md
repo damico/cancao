@@ -115,7 +115,10 @@ programa sai explicando como reiniciar o PipeWire.
   aço entra por uma cascata de passa-tudos (até 32 seções, projetada por
   tecla ao criar o instrumento): os agudos dão a volta mais rápido e os
   parciais caem em `f_n = n*f*√(1 + B*n²)`. As cordas do uníssono passam
-  pelos filtros em paralelo (SIMD); custa menos que o modal (`--bench`).
+  pelos filtros em paralelo (SIMD) e terminam no mesmo cavalete: ele se
+  move com a soma das ondas e devolve esse movimento a todas, o que produz
+  o decaimento em dois estágios (cordas em fase perdem energia rápido, em
+  oposição ficam; Weinreich, 1977).
 
 Etapas do guia de onda:
 
@@ -127,12 +130,15 @@ Etapas do guia de onda:
 3. ~~Martelo não linear (feltro como mola dura)~~ (massa, K e p de
    Chaigne e Askenfelt 1994; o brilho cresce com a força sozinho: no C4,
    de 0,45% da energia acima de 1,5 kHz em pp para 10,9% em ff)
-4. Cordas do uníssono acopladas no cavalete (decaimento em dois estágios,
-   batimentos, ressonância simpática)
+4. ~~Cordas do uníssono acopladas no cavalete~~ (decaimento em dois
+   estágios medido: A4 cai 13 dB/s no início e 2,3 dB/s no pós-som, contra
+   1,9 dB/s previstos pela perda própria da corda; com una corda, a corda
+   não atingida vibra só pelo cavalete)
+5. Ressonância simpática entre notas diferentes (cordas livres com o
+   sustain, excitadas pelo cavalete)
 
-Ainda falta o decaimento em dois estágios, que virá do acoplamento das
-cordas. A calibrar no martelo: nos graves o contato sai com ~1,5 ms em mf,
-abaixo dos 2 a 4 ms da literatura.
+A calibrar no martelo: nos graves o contato sai com ~1,5 ms em mf, abaixo
+dos 2 a 4 ms da literatura.
 
 ## MusicXML
 
@@ -280,11 +286,20 @@ feitas durante o desenvolvimento.
 
 ### Som
 
-- **Guia de onda, etapa 4: acoplamento das cordas no cavalete.** Sem ela não
-  há decaimento em dois estágios (hoje é um decaimento único, 2,5 vezes o
-  primeiro estágio do modal), nem batimentos naturais, nem ressonância
-  simpática. A corda não atingida pela una corda hoje só recebe um golpe
-  mais fraco, em vez de vibrar pelo cavalete.
+- **Ressonância simpática entre notas** (etapa 5 do guia de onda): com o
+  sustain, as cordas livres de outras notas deveriam vibrar pelo cavalete.
+- **Desafinação do uníssono no guia de onda** é bem menor que no modal (0,2 e
+  -0,13 cent contra 0,9 e -0,6): os dois estágios só aparecem com
+  desafinação pequena perto do acoplamento. Efeitos: quase não há batimento
+  audível e o pós-som dos agudos é fraco (C6 e C8 ficam 9 a 11 dB abaixo do
+  modal entre 1 e 1,5 s). Um cavalete com resposta reativa (não só
+  resistiva), como o real, misturaria os modos de outra forma; calibrar com
+  gravações de piano.
+- **Notas de uma corda (A0 a E1)** continuam com decaimento único: o pós-som
+  delas vem das duas polarizações da corda (vertical e horizontal), não
+  modeladas.
+- **Custo:** o acoplamento dobrou o custo do guia de onda (de ~4% para ~8,5%
+  do prazo do bloco com 32 vozes); aceito em troca da qualidade.
 - **Martelo nos graves:** contato de ~1,5 ms em mf, abaixo dos 2 a 4 ms da
   literatura. Calibrar massa/feltro abaixo do C2 (hoje extrapolados).
 - **Ataque dos agudos:** dobrar o golpe numa volta removeu o estalo
@@ -296,9 +311,9 @@ feitas durante o desenvolvimento.
 - **Tampo sintético.** A resposta ao impulso é gerada (300 modos de placa e
   cauda de sala); uma resposta gravada de um piano real (`--tampo`) deve
   soar melhor.
-- **Fenômenos não modelados:** ressonância simpática das cordas livres com o
-  sustain, parciais fantasmas dos graves (vibração longitudinal), as duas
-  polarizações da corda, abafador que abafa igual em todas as frequências.
+- **Fenômenos não modelados:** parciais fantasmas dos graves (vibração
+  longitudinal), as duas polarizações da corda, abafador que abafa igual em
+  todas as frequências.
 - **Tudo igual a cada toque:** o desafino do uníssono é o mesmo nas 88
   teclas e a mesma nota repetida gera exatamente o mesmo som. Falta
   variação por tecla e por golpe.

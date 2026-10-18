@@ -264,6 +264,43 @@ mod testes {
         }
     }
 
+    /// nível (dB) entre t0 e t1 segundos
+    fn db(s: &[f32], t0: f32, t1: f32) -> f32 {
+        20.0 * rms(s, t0, t1).log10()
+    }
+
+    #[test]
+    fn guia_de_onda_decai_em_dois_estagios() {
+        // cavalete: as cordas em fase perdem energia rápido, as em oposição
+        // ficam; a queda no fim tem que ser bem mais lenta que no início
+        for nome in ["A2", "A4", "C6"] {
+            let tecla = tecla_de_nome(nome).unwrap() as u8;
+            let mut m = Motor::new(Synth::new(TAXA, 1.0, None).com_modelo(Modelo::Guia), TAXA);
+            m.agendar(EventoAgendado::agora(Evento::NotaOn { tecla, vel: 0.7 }));
+            let s = tocar(&mut m, 9.0);
+            let inicio = (db(&s, 0.05, 0.25) - db(&s, 1.0, 1.2)) / 0.95;
+            let fim = (db(&s, 4.0, 4.2) - db(&s, 8.5, 8.7)) / 4.5;
+            assert!(inicio > 2.5 * fim && fim > 0.0, "{nome}: {inicio:.1} dB/s no início, {fim:.1} dB/s no fim");
+        }
+    }
+
+    #[test]
+    fn guia_de_onda_estavel_em_todas_as_teclas() {
+        // o acoplamento nunca pode criar energia
+        for una in [0.0, 1.0] {
+            for tecla in (0..88u8).step_by(3).chain([87]) {
+                let mut m = Motor::new(Synth::new(TAXA, 1.0, None).com_modelo(Modelo::Guia), TAXA);
+                pedal(&mut m, 0.0, Pedal::UnaCorda, una);
+                m.agendar(EventoAgendado::agora(Evento::NotaOn { tecla, vel: 1.0 }));
+                let s = tocar(&mut m, 1.5);
+                assert!(s.iter().all(|x| x.is_finite()), "tecla {tecla}: valor inválido");
+                let pico = |a: &[f32]| a.iter().fold(0f32, |p, x| p.max(x.abs()));
+                let (antes, depois) = (pico(&s[..2 * 24000]), pico(&s[2 * 48000..]));
+                assert!(depois <= antes, "tecla {tecla} (una {una}): cresceu de {antes} para {depois}");
+            }
+        }
+    }
+
     #[test]
     fn guia_de_onda_grave_continua_soando() {
         // no grave a onda é um pulso curto e silêncio a cada volta; a voz não

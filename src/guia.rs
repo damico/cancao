@@ -41,19 +41,34 @@
 //! frequência: os agudos dão a volta mais depressa. O número de seções e o
 //! coeficiente são escolhidos por tecla para os parciais caírem em f_n.
 //!
-//! Ainda sem acoplamento das cordas no cavalete (etapa 4).
+//! Cavalete (etapa 4): as 2 ou 3 cordas de uma nota terminam no mesmo
+//! cavalete, que se move com a soma das ondas que chegam e devolve esse
+//! movimento a todas. Cordas em fase empurram o cavalete juntas e perdem
+//! energia rápido (o som imediato); em oposição a soma se cancela e elas soam
+//! por muito tempo (o pós-som). A desafinação mínima entre elas passa energia
+//! de um modo para o outro aos poucos: o decaimento em dois estágios do piano
+//! sai daí (Weinreich, 1977). Com una corda, a corda não atingida só vibra
+//! porque o cavalete a excita.
+//!
+//! Ainda sem a ressonância simpática entre notas diferentes.
 
 use std::f32::consts::PI;
 
 use crate::corda::Corda;
 use crate::martelo::{self, MAX_GOLPE};
 use crate::modal::tau_base;
-use crate::synth::{BLOCO, DESAFINO_UNISSONO, MAX_UNISSONO, POS_MARTELO, SIMPATIA_UNA_CORDA, TAU_ABAFADO};
+use crate::synth::{BLOCO, MAX_UNISSONO, POS_MARTELO, TAU_ABAFADO};
 
 /// Atraso máximo de uma volta: A0 a 48 kHz precisa de ~1745 amostras.
 const MAX_ATRASO: usize = 2048;
 /// Golpe do martelo mais a reflexão (até ~1/8 da volta).
 const MAX_EXCITACAO: usize = MAX_GOLPE + MAX_ATRASO / 4;
+/// Desafinação entre as cordas do uníssono (cents). Os dois estágios do
+/// decaimento só aparecem quando ela é pequena perto do acoplamento pelo
+/// cavalete; com os 0,9 e −0,6 cents do modelo modal, nos médios e agudos
+/// (onde o mesmo cent vale mais Hz) as cordas decaem quase juntas e o pós-som
+/// some (medido: A4 caindo 7 a 9 dB/s no fim, em vez de ~2).
+const DESAFINO_GUIA: [f32; MAX_UNISSONO] = [0.0, 0.2, -0.13];
 /// Seções do filtro de dispersão.
 pub const MAX_DISPERSAO: usize = 32;
 /// Parciais acima disto não entram no projeto da dispersão (nos agudos o
@@ -106,11 +121,29 @@ fn atraso_volta(n: usize, a_perdas: f32, disp: Dispersao, eta: f32, w: f32) -> f
 /// seções só custariam processamento.
 const TOLERANCIA_CENTS: f32 = 1.5;
 
-/// Decaimento da fundamental no guia de onda: sem o acoplamento das cordas
-/// (etapa 4) não há decaimento em dois estágios; um único decaimento entre
-/// os dois do modelo modal.
-fn tau_guia(f: f32) -> f32 {
-    2.5 * tau_base(f)
+/// Decaimento próprio da corda (ar, material), sem o cavalete. Com 2 ou 3
+/// cordas ele é o pós-som, 6 vezes o decaimento base (como o 2º estágio do
+/// modal); o cavalete acrescenta a perda rápida do som imediato. Notas de
+/// uma corda só não têm o par em oposição (o pós-som delas vem das duas
+/// polarizações da corda, ainda não modeladas) e ficam com um decaimento
+/// único, entre os dois estágios do modal.
+fn tau_corda(c: &Corda) -> f32 {
+    let f = c.parcial(1) as f32;
+    if c.n_cordas > 1 { 6.0 * tau_base(f) } else { 2.5 * tau_base(f) }
+}
+
+/// Acoplamento pelo cavalete: a cada volta, cada corda perde `α` vezes a soma
+/// das ondas que chegaram. As cordas em fase decaem então com
+/// (1 − n α) por volta, além da perda própria; α é escolhido para esse modo
+/// decair com o decaimento base (o 1º estágio do modal). Os autovalores da
+/// junção são 1 e 1 − n α, então ela nunca cria energia.
+fn acoplamento(c: &Corda) -> f32 {
+    if c.n_cordas < 2 {
+        return 0.0;
+    }
+    let f = c.parcial(1) as f32;
+    let extra = 1.0 / tau_base(f) - 1.0 / tau_corda(c);
+    (1.0 - (-extra / f).exp()) / c.n_cordas as f32
 }
 
 /// Escolhe o filtro de dispersão da corda: para cada número de seções, o
@@ -120,7 +153,7 @@ fn tau_guia(f: f32) -> f32 {
 /// para fazer a cada nota: calcula-se uma vez por tecla.
 pub fn projetar_dispersao(c: &Corda, taxa: f32) -> Dispersao {
     let f1 = c.parcial(1) as f32;
-    let (a_lp, _) = ajustar_perdas(f1, tau_guia(f1), taxa);
+    let (a_lp, _) = ajustar_perdas(f1, tau_corda(c), taxa);
     let w = |n: u32| 2.0 * PI * c.parcial(n) as f32 / taxa;
     let f_lim = limite_dispersao(f1, taxa);
     let parciais: Vec<u32> = (2..=40).filter(|&n| (c.parcial(n) as f32) < f_lim).collect();
@@ -261,8 +294,10 @@ pub struct VozGuia {
     eta: Faixas,
     ap_x1: Faixas,
     ap_y1: Faixas,
-    /// quanto do golpe cada corda recebe (una corda: a não atingida recebe pouco)
+    /// quanto do golpe cada corda recebe (una corda: a não atingida, nada)
     golpe: Faixas,
+    /// acoplamento pelo cavalete ([`acoplamento`])
+    alfa: f32,
     excitacao: [f32; MAX_EXCITACAO],
     len_exc: usize,
     t: usize,
@@ -290,6 +325,7 @@ impl Default for VozGuia {
             ap_x1: [0.0; FAIXAS],
             ap_y1: [0.0; FAIXAS],
             golpe: [0.0; FAIXAS],
+            alfa: 0.0,
             excitacao: [0.0; MAX_EXCITACAO],
             len_exc: 0,
             t: 0,
@@ -306,10 +342,10 @@ impl VozGuia {
     pub fn new(c: &Corda, disp: Dispersao, vel: f32, una_corda: f32, ganho: f32, taxa: f32) -> Self {
         // com rigidez a fundamental também sobe um pouco: f √(1 + B)
         let f = c.parcial(1) as f32;
-        let mut v = VozGuia { nu: c.n_cordas, f, disp, ..VozGuia::default() };
-        let tau0 = tau_guia(f);
+        let mut v = VozGuia { nu: c.n_cordas, f, disp, alfa: acoplamento(c), ..VozGuia::default() };
+        let tau0 = tau_corda(c);
         let atingidas = if una_corda >= 0.5 && v.nu > 1 { v.nu - 1 } else { v.nu };
-        for (u, &cents) in DESAFINO_UNISSONO[..v.nu].iter().enumerate() {
+        for (u, &cents) in DESAFINO_GUIA[..v.nu].iter().enumerate() {
             let fu = f * 2f32.powf(cents / 1200.0);
             let (a, g) = ajustar_perdas(fu, tau0, taxa);
             // atraso total de uma volta = taxa / f; os filtros de perdas e de
@@ -318,7 +354,8 @@ impl VozGuia {
             v.linhas[u].n = n;
             (v.lp_a[u], v.lp_b[u], v.g_natural[u]) = (a, g * (1.0 + a), g);
             v.eta[u] = eta;
-            v.golpe[u] = if u < atingidas { 1.0 } else { SIMPATIA_UNA_CORDA };
+            // a corda que o martelo não atinge só vibra pelo cavalete
+            v.golpe[u] = if u < atingidas { 1.0 } else { 0.0 };
         }
 
         // martelo: a força sai da simulação do feltro contra a corda
@@ -371,6 +408,11 @@ impl VozGuia {
             for u in 0..self.nu {
                 let l = &self.linhas[u];
                 d[u] = l.buf[l.pos];
+            }
+            // cavalete: move-se com a soma das ondas e devolve a todas
+            let soma: f32 = d.iter().sum();
+            for x in &mut d[..self.nu] {
+                *x -= self.alfa * soma;
             }
             for u in 0..FAIXAS {
                 d[u] = self.lp_b[u] * d[u] - self.lp_a[u] * self.lp_y1[u];
@@ -425,7 +467,7 @@ mod testes {
         let c = &cordas[k];
         let f1 = c.parcial(1) as f32;
         let disp = projetar_dispersao(c, taxa);
-        let (a, _) = ajustar_perdas(f1, tau_guia(f1), taxa);
+        let (a, _) = ajustar_perdas(f1, tau_corda(c), taxa);
         let (n, eta) = sintonia(f1, a, disp, taxa);
         (1..=40)
             .map(|n| c.parcial(n) as f32)
