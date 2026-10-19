@@ -204,11 +204,40 @@ pensado para coleções como o [PDMX](https://zenodo.org/records/15571083)
 (mais de 250 mil MusicXML do MuseScore), onde as pastas são numéricas e os
 nomes de arquivo são só códigos (`Qmf5fZZe...mxl`).
 
-    ./target/release/piano --gui                       # botão Acervo na barra
+![Tela Acervo sem busca: compositores sugeridos com a contagem de obras, obras para piano alternando entre eles e o painel da obra escolhida](docs/acervo.png)
+
+![Busca por "bach": primeiro as obras de Bach para piano, depois as outras formações e a Bachianas Brasileiras de Villa-Lobos, que tem a palavra no título](docs/acervo-busca.png)
+
+As capturas usam um acervo de demonstração com 58 obras de domínio
+público (só os cabeçalhos), gerado para o README.
+
+### Configurar
+
+1. Baixe e descompacte a coleção numa pasta qualquer, por exemplo
+   `~/Documents/mxl` (o PDMX vem em `mxl.tar.gz`).
+2. Aponte o cancao para ela, por um dos dois caminhos:
+   - na interface, o ícone **Acervo** (os livros, ao lado da pasta) abre a
+     tela; na primeira vez ela pede a pasta pelo diálogo do sistema;
+   - no terminal, `./target/release/piano --acervo ~/Documents/mxl`.
+3. A primeira leitura monta o índice (uma barra mostra o andamento); das
+   próximas vezes a tela abre direto na busca.
+
+A pasta escolhida fica em `~/.config/cancao/cancao.conf`, um arquivo de
+texto que também guarda as 12 partituras abertas por último:
+
+    acervo=/home/voce/Documents/mxl
+    recente=/home/voce/Documents/mxl/11/11/QmTbkb6p...mxl
+
+**Trocar pasta** escolhe outra (o índice de cada pasta fica guardado à
+parte) e **Atualizar índice** relê a pasta atual depois de mudanças.
+
+    ./target/release/piano --gui                       # ícone Acervo na barra
     ./target/release/piano --acervo ~/Documents/mxl    # guarda a pasta e indexa
     ./target/release/piano --buscar "chopin nocturne"  # a mesma busca no terminal
 
-Na interface, o botão **Acervo** abre a tela de busca por cima do piano roll
+### Buscar
+
+Na interface, o ícone **Acervo** abre a tela de busca por cima do piano roll
 (o som continua):
 
 - **Pasta:** na primeira vez a tela pede a pasta (em qualquer nível de
@@ -241,6 +270,52 @@ compositores vazios ou escritos de vários jeitos (`J. S. Bach`, `J.S.Bach`,
 `Johann Sebastian Bach`). A busca por palavras cobre a maior parte
 desses casos. As partituras de coleções de terceiros têm a licença de cada
 arquivo e não fazem parte deste repositório.
+
+### Como foi desenhado
+
+- **Os metadados vêm de dentro do arquivo.** Com pastas numéricas e nomes
+  em código, não há o que aproveitar do caminho. O `.mxl` é um zip: o
+  cancao lê o `META-INF/container.xml` para achar a partitura e
+  descompacta só os primeiros 64 KB, onde ficam `work-title`,
+  `creator type="composer"`, a `part-list` e as primeiras `staves`. As tags
+  são achadas por busca de texto, sem montar a árvore XML, e o texto pode vir
+  em UTF-8 ou UTF-16 (com BOM). Entidades são decodificadas duas vezes,
+  porque há arquivos com `&amp;amp;` no título.
+- **Título e compositor têm reserva.** Sem `work-title`, vale
+  `movement-title`, depois o primeiro `credit-words` e por fim o nome do
+  arquivo; partes chamadas só "MusicXML Part" são ignoradas e o
+  `instrument-name` substitui a `part-name` vazia.
+- **Indexação paralela e discreta.** `std::thread::scope` com um contador
+  atômico do próximo arquivo; metade dos núcleos, cada linha de execução
+  com prioridade mínima (nice 19, no Linux), para a síntese em tempo real
+  não perder prazo. A leitura roda fora da linha da interface e entrega o
+  resultado por um canal; a interface só consulta dois contadores atômicos
+  a cada quadro para desenhar a barra.
+- **Índice em texto.** Um TSV em `~/.cache/cancao/acervo-<hash>.tsv` (hash
+  FNV-1a do caminho da pasta), com caminhos relativos; a primeira linha tem
+  a versão do formato e a pasta. Mudar a versão no código refaz os índices
+  antigos sozinho.
+- **Busca linear em memória.** Cada obra guarda uma chave normalizada
+  (minúsculas, sem acentos, pontuação vira espaço) de compositor, título e
+  instrumentos; a consulta passa pela mesma normalização e percorre todas
+  as obras a cada tecla, sem índice invertido. Toda palavra precisa
+  aparecer. A pontuação de cada palavra é 5 para palavra inteira no
+  compositor, 4 no título, 3 no começo de uma palavra e 1 em qualquer
+  ponto; empates ficam com as de piano e depois em ordem alfabética. A
+  lista mostra as 300 mais relevantes.
+- **Piano por formação.** Uma obra conta como piano quando todas as partes
+  têm nome de teclado (piano, klavier, cembalo, harpsichord, teclado, ...)
+  ou quando há uma parte só, com duas pautas.
+- **Sugestões curadas.** Contar os compositores mais frequentes trazia
+  lixo dos metadados enviados por usuários; por isso a tela conta as obras
+  de uma lista fixa de 32 compositores (de Bach a Pixinguinha), com a mesma
+  regra de palavra inteira, e mostra os que existem no acervo. Sem busca,
+  a lista alterna entre eles para não ficar só num.
+- **Camadas.** `src/acervo.rs` não sabe da interface (é o mesmo código do
+  `--buscar` no terminal e tem testes); `src/gui/acervo.rs` cuida da carga
+  em segundo plano, das recentes e da conversão para a tela; e
+  `ui/acervo.slint` desenha a tela por cima do piano roll, com o teclado
+  num `FocusScope` próprio.
 
 ## Usar
 
@@ -421,7 +496,15 @@ entre os dois só passam eventos.
 
 ## Motor de expressão e emoção percebida
 
-![Interpretação melancólica da Ode à Alegria: plano Valência x Ativação com as trajetórias das quatro interpretações e o ponto de agora, resumo da execução e a faixa de emoção alinhada com o roll](docs/interpretacoes.png)
+![A Ode à Alegria nas quatro interpretações, no mesmo ponto da partitura: em cada uma, o plano Valência x Ativação com a trajetória dela em destaque, as outras apagadas e o ponto de agora, e o resumo da execução](docs/interpretacoes.png)
+
+A mesma partitura, no mesmo compasso, nas quatro interpretações. A
+**enérgica** acelera (114%), toca mais forte (0,72) e mais destacado
+(articulação 70%), e sua trajetória sobe para o quadrante de ativação
+positiva. A **contemplativa** desacelera (86%), toca mais leve (0,41) e usa
+o una corda; a **melancólica** é a mais lenta (77%) e a de maior agógica
+(9,6%). As duas descem para a ativação baixa, a melancólica com a valência
+mais negativa. A neutra fica entre elas e serve de referência.
 
 O motor de expressão (`src/expressao.rs`, *Expressive Performance Engine*)
 transforma a mesma partitura em interpretações diferentes, decidindo
@@ -609,21 +692,6 @@ contém o instante (resolução de 2,7 ms).
 - WAV de `--render` com correlação 1,0 com o da versão C (mesmo pico,
   mesmo RMS, afinação igual nas 88 teclas);
 - `--bench`: Rust 5,4% do prazo em média com tampo, C 6,2%.
-
-## Roteiro
-
-1. ~~Portar para Rust~~
-2. ~~Interface de eventos completa e pedais no instrumento~~
-3. ~~Guia de onda digital (corda simulada como ondas viajantes)~~ (etapas 1 a 5)
-4. ~~Partitura + MusicXML 4.0 simplificado~~ (versão inicial)
-5. ~~Player: duas mãos, cinco dedos (dedilhado, tempo, dinâmica)~~ (versão inicial)
-6. ~~GUI em Slint~~ (piano roll, primeira versão: visualização e transporte)
-7. ~~Pé nos pedais, interpretação mais humana~~ (versão inicial: pedal
-   automático pela harmonia, melodia adiantada, acentos métricos,
-   ritardando final, articulações)
-8. ~~Motor de expressão e emoção percebida~~ (versão inicial: perfis
-   contemplativa, enérgica e melancólica; plano Valência x Ativação e faixa
-   de emoção na interface)
 
 ## Pendências
 
@@ -819,7 +887,7 @@ feitas durante o desenvolvimento.
 - **Primeira compilação lenta** (o Verovio em C++, ~10 min) e a licença
   LGPL-3.0 do Verovio para quem distribuir binários (ver acima).
 
-### Próximas etapas do roteiro
+### Próximas etapas
 
 Segunda etapa da interface (edição) e a camada das cordas vibrando.
 
